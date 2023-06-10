@@ -1,0 +1,106 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+RWByteAddressBuffer VerticesBuffer;
+RWByteAddressBuffer NormalsBuffer;
+RWByteAddressBuffer UVsBuffer;
+RWByteAddressBuffer ColorsBuffer;
+
+
+int GridSize;
+
+void Store(RWByteAddressBuffer buf, int index, float3 v)
+{
+	uint3 data = asuint(v);
+	buf.Store3((index * 3) << 2, data);
+}
+
+void StoreFloat4(RWByteAddressBuffer buf, int index, float4 v)
+{
+	uint4 data = asuint(v);
+	buf.Store4((index * 3) << 2, data);
+}
+
+void StoreVertex(int index, float3 v)
+{
+	uint3 data = asuint(v);
+	VerticesBuffer.Store3((index * 3) << 2, data);
+}
+
+void StoreNormal(int index, float3 v)
+{
+	uint3 data = asuint(v);
+	NormalsBuffer.Store3((index * 3) << 2, data);
+}
+
+void StoreUV(int index, float2 v)
+{
+	uint2 data = asuint(v);
+	UVsBuffer.Store2((index * 3) << 2, data);
+}
+
+void StoreColor(int index, float4 v)
+{
+	uint4 data = asuint(v);
+	ColorsBuffer.Store4((index * 3) << 2, data);
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id3 : SV_DispatchThreadID)
+{
+	int x = id3.x;
+	int y = id3.y;
+	int maxGrids = GridSize * GridSize;
+	
+	
+	if (x >= GridSize || y >= GridSize)
+		return;
+	
+	float3 corner0 = float3(x, y, 0);
+	float3 corner1 = float3(x, y + 1, 0);
+	float3 corner2 = float3(x + 1, y + 1, 0);
+	float3 corner3 = float3(x + 1, y, 0);
+	
+	float3 normal = float3(0, 0, -1);
+	
+	int index = (x + y * GridSize) * 6;
+	
+	float4 white = float4(1, 1, 1, 1);
+	float4 color = white; //float4(1, 0, 0, 1);
+	float4 altColor = white; //float4(0, 1, 1, 1);
+	
+	StoreVertex(index + 0, corner0);
+	StoreVertex(index + 1, corner1);
+	StoreVertex(index + 2, corner2);
+	
+	StoreVertex(index + 3, corner0);
+	StoreVertex(index + 4, corner2);
+	StoreVertex(index + 5, corner3);
+	
+	int i = 0;
+	
+	for (i = 0; i < 6; i++)
+	{
+		StoreNormal(index + i, normal);
+		//StoreColor(index + i, color);
+	}
+	
+	for (i = 0; i < 3; i++)
+	{
+		StoreColor(index + i, color);
+	}
+	
+	for (i = 3; i < 6; i++)
+	{
+		StoreColor(index + i, altColor);
+	}
+	
+	StoreUV(index + 0, float2(0, 0));
+	StoreUV(index + 1, float2(0, 1));
+	StoreUV(index + 2, float2(1, 1));
+	
+	StoreUV(index + 3, float2(0, 0));
+	StoreUV(index + 4, float2(1, 1));
+	StoreUV(index + 5, float2(1, 0));
+
+}

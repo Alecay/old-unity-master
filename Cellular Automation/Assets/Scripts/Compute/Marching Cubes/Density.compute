@@ -1,0 +1,144 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Main
+
+#include "Includes/NOISE_SIMPLEX_FUNC.hlsl"
+
+uint Seed = 42;
+uint Octaves = 5;
+
+float Scale = 100.0f;
+
+float Persistance = 0.5f;
+float Lacunarity = 2.0f;
+
+float3 Offset = float3(0, 0, 0);
+
+uint ChunkSize = 16;
+
+float3 ChunkOffset = float3(0, 0, 0);
+
+float HeightMultiplier = 16.0f;
+
+int HeightOffset = 1;
+
+uint WorldHeight = 256;
+
+RWStructuredBuffer<float> Density_Values_Buffer;
+
+float Radius = 100.0f;
+
+float inverse_lerp(float a, float b, float l)
+{
+	return clamp((l - a) / (b - a), 0, 1);
+}
+
+float Noise3D(float x, float y, float z)
+{
+	float minScale = 1.0f / 10000.0f;
+	
+	if (Scale < minScale)
+	{
+		Scale = minScale;
+	}
+	
+	float amplitude = 1;
+	float frequency = 1;
+	float noiseHeight = 0;
+	
+	float sampleX = 0;
+	float sampleY = 0;
+	float sampleZ = 0;
+	float perlinValue = 0;
+	
+	float halfXWidth = ChunkSize / 2.0f;
+	float halfYWidth = ChunkSize / 2.0f;
+	float halfZWidth = ChunkSize / 2.0f;
+	
+	bool centered = false;
+	
+	if (!centered)
+	{
+		halfXWidth = 0;
+		halfYWidth = 0;
+		halfZWidth = 0;
+	}
+	
+	float maxPerlinValue = 0;
+	
+	for (uint i = 0; i < Octaves; i++)
+	{
+		maxPerlinValue += amplitude;
+		
+		amplitude *= Persistance;
+	}
+	
+	amplitude = 1;
+	
+	float seedX = lerp(-1000, 1000, (snoise(float2(Seed, Seed + 1)) + 1) / 2.0f);
+	float seedY = lerp(-1000, 1000, (snoise(float2(Seed + 1, Seed)) + 1) / 2.0f);
+	float seedZ = lerp(-1000, 1000, (snoise(float2(Seed + 1, Seed + 1)) + 1) / 2.0f);
+	
+	for (uint j = 0; j < Octaves; j++)
+	{				
+		sampleX = ((x - halfXWidth + Offset.x + ChunkOffset.x * (float) ChunkSize) / Scale * frequency) + seedX + (j + 1);
+		sampleY = ((y - halfYWidth + Offset.y + ChunkOffset.y * (float) ChunkSize) / Scale * frequency) + seedY + (j + 1);
+		sampleZ = ((z - halfZWidth + Offset.z + ChunkOffset.z * (float) ChunkSize) / Scale * frequency) + seedZ + (j + 1);
+		
+		perlinValue = snoise(float3(sampleX, sampleY, sampleZ));
+		//perlinValue = (perlinValue + 1) / 2.0f;
+
+		noiseHeight += perlinValue * amplitude;
+		
+		amplitude *= Persistance;
+		frequency *= Lacunarity;
+
+	}
+	
+	return noiseHeight;
+}
+
+[numthreads(8,8,1)]
+void Main(uint3 coordinate : SV_DispatchThreadID)
+{
+	if (coordinate.x >= ChunkSize || coordinate.y >= ChunkSize || coordinate.z >= ChunkSize)
+	{
+		return;
+	}
+	
+	int index = coordinate.x + coordinate.y * ChunkSize + coordinate.z * ChunkSize * ChunkSize;
+
+	float nValue = Noise3D(coordinate.x, coordinate.y, coordinate.z);
+	float density;
+	
+	float3 center = float3(256, 256, 256);
+	float3 point3D = float3(coordinate.x, coordinate.y, coordinate.z) + Offset;
+	float dist = distance(center, point3D);	
+	
+	float height = clamp(nValue, -1, 1) * HeightMultiplier;
+	density = 1 - (dist / (Radius + height));
+	
+	density = clamp(nValue, -1, 1);
+	
+	float actualY = (float) coordinate.y + Offset.y;
+	
+	dist = actualY - 50;
+	
+	density = clamp(nValue - (dist / HeightMultiplier), -1, 1);
+	
+	if (actualY < 50)
+	{
+		//density = clamp(nValue - (dist / (HeightMultiplier * 0.5f)), -1, 1);
+	}
+	else
+	{
+		//density = clamp(nValue - (dist / (HeightMultiplier * 2.0f)), -1, 1);
+	}
+
+	
+	if (actualY < 50)
+	{
+		//density = 1.0f;
+	}
+	
+	Density_Values_Buffer[index] = density;
+}

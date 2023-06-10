@@ -1,0 +1,658 @@
+﻿#include "Includes/NOISE_SIMPLEX_FUNC.hlsl"
+
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CalculateFutureCells
+#pragma kernel CopyFutureCellsToCells
+#pragma kernel CreateTexture
+
+float Emission_Enabled = 1.0f;
+float Use_Cell_Average = 1.0f;
+
+float Cell_Min = 1.0f;
+float Cell_Max = 3.0f;
+
+int Simulations = 0;
+int RandIndex = 0;
+
+int XWidth = 10;
+int YWidth = 10;
+
+float4 Color = float4(1, 1, 1, 1);
+
+RWStructuredBuffer<float> Cells_Buffer;
+RWStructuredBuffer<float> Future_Cells_Buffer;
+
+RWTexture2D<float4> Result;
+
+float random(float x, float y)
+{
+	int nX = round(x + Simulations * 5) % XWidth;
+	int nY = round(y - Simulations * 2) % YWidth;
+	float2 uv = float2(nX / (float) XWidth, nY / (float) YWidth);
+	
+	return frac(sin(dot(uv, float2(12.9898, 78.233))) * 43758.5453123);
+}
+
+int LinearIndex(int x, int y)
+{
+	return x + y * XWidth;
+}
+
+bool InBounds(int x, int y)
+{
+	return x >= 0 && x < XWidth && y >= 0 && y < YWidth;
+}
+
+bool GetCell(int x, int y)
+{
+	if (!InBounds(x, y))
+	{
+		return false;
+	}
+	
+	return Cells_Buffer[LinearIndex(x, y)] > 0;
+}
+
+bool GetNeighbor(int x, int y, int index)
+{
+	int nx;
+	int ny;
+	
+	switch (index)
+	{
+		default:
+		case 0: //Top
+			nx = x;
+			ny = y + 1;
+			break;
+		case 1: //Top Left
+			nx = x - 1;
+			ny = y + 1;
+			break;
+		case 2: //Left
+			nx = x - 1;
+			ny = y;
+			break;
+		case 3: //Bottom Left
+			nx = x - 1;
+			ny = y - 1;
+			break;
+		case 4: //Bottom
+			nx = x;
+			ny = y - 1;
+			break;
+		case 5: //Bottom Right
+			nx = x + 1;
+			ny = y - 1;
+			break;
+		case 6: //Right
+			nx = x + 1;
+			ny = y;
+			break;
+		case 7: //Top Right
+			nx = x + 1;
+			ny = y + 1;
+			break;
+	}
+	
+	return GetCell(nx, ny);
+}
+
+float GetCellAmount(int x, int y)
+{
+	if (!InBounds(x, y))
+	{
+		return 0;
+	}
+	
+	return Cells_Buffer[LinearIndex(x, y)];
+}
+
+float GetNeighborAmount(int x, int y, int index)
+{
+	int nx;
+	int ny;
+	
+	switch (index)
+	{
+		default:
+		case 0: //Top
+			nx = x;
+			ny = y + 1;
+			break;
+		case 1: //Top Left
+			nx = x - 1;
+			ny = y + 1;
+			break;
+		case 2: //Left
+			nx = x - 1;
+			ny = y;
+			break;
+		case 3: //Bottom Left
+			nx = x - 1;
+			ny = y - 1;
+			break;
+		case 4: //Bottom
+			nx = x;
+			ny = y - 1;
+			break;
+		case 5: //Bottom Right
+			nx = x + 1;
+			ny = y - 1;
+			break;
+		case 6: //Right
+			nx = x + 1;
+			ny = y;
+			break;
+		case 7: //Top Right
+			nx = x + 1;
+			ny = y + 1;
+			break;
+	}
+	
+	return GetCellAmount(nx, ny);
+}
+
+float GetAverageCellAmount(int x, int y)
+{
+	if (!InBounds(x, y) || GetCellAmount(x, y) <= 0.0f)
+	{
+		return 0;
+	}	
+	
+	float amount = 0;
+	float nAmount;
+	float count = 0;
+	
+	
+	////Local
+	//for (int i = 0; i < 8; i += 2)
+	//{
+	//	nAmount = GetNeighborAmount(x, y, i);
+	//	if (nAmount > 0)
+	//	{
+	//		count += 1.0f;
+	//		amount += nAmount;
+	//	}
+
+	//}
+	
+	////Surronding
+	//for (int i = 0; i < 8; i++)
+	//{
+	//	nAmount = GetNeighborAmount(x, y, i);
+	//	if (nAmount > 0)
+	//	{
+	//		count += 1.0f;
+	//		amount += nAmount;
+	//	}
+	//}
+	
+	//Mega
+	int width = 3;
+	for (int nx = x - width; nx <= x + width; nx++)
+	{
+		for (int ny = y - width; ny <= y + width; ny++)
+		{
+			if (!InBounds(nx, ny) || (nx == x && ny == y))
+			{
+				continue;
+			}
+			
+			nAmount = GetCellAmount(nx, ny);
+			if (nAmount > 0)
+			{
+				count += 1.0f;
+				amount += nAmount;
+			}
+		}
+	}
+	
+	if (count == 0)
+	{
+		return 0;
+	}
+	
+	return round(amount / count);
+}
+
+int GetLessThanNeighborCount(int x, int y)
+{
+	if (!InBounds(x, y))
+	{
+		return 0;
+	}
+
+	int count = 0;
+	float amount = GetCellAmount(x, y);
+	
+	for (int i = 0; i < 8; i++)
+	{
+		if (GetNeighborAmount(x, y, i) < amount)
+		{
+			count++;
+		}
+
+	}
+		
+	return count;
+}
+
+int GetGreaterOrEqualThanNeighborCount(int x, int y)
+{
+	if (!InBounds(x, y))
+	{
+		return 0;
+	}
+
+	int count = 0;
+	float amount = GetCellAmount(x, y);
+	
+	for (int i = 0; i < 8; i++)
+	{
+		if (GetNeighborAmount(x, y, i) >= amount)
+		{
+			count++;
+		}
+
+	}
+		
+	return count;
+}
+
+bool GetSand(uint3 id)
+{
+	bool cellIsAlive = GetCell(id.x, id.y);	
+	bool newCell = cellIsAlive;
+	
+	if (cellIsAlive)
+	{
+		//Bottom is alive
+		if (GetNeighbor(id.x, id.y, 4) || id.y == 0)
+		{
+			//Bottom Left not alive and not at edge and left not alive
+			if (id.y > 0 && id.x > 0 && !GetNeighbor(id.x, id.y, 3) && !GetNeighbor(id.x, id.y, 2))
+			{
+				newCell = false;
+			} // not at edge and right 
+			else if (id.y > 0 && id.x < XWidth - 1 && !GetNeighbor(id.x, id.y, 5) && !GetNeighbor(id.x, id.y, 6))
+			{
+				newCell = false;
+			}
+			else
+			{
+				newCell = true;
+			}
+		}
+		else
+		{
+			newCell = false;
+		}
+	}
+	else
+	{
+		//Top is alive
+		if (GetNeighbor(id.x, id.y, 0))
+		{
+			newCell = true;
+		}
+		else
+		{
+			//If Top right cell is alive && Right cell is alive
+			if (GetNeighbor(id.x, id.y, 7) && GetNeighbor(id.x, id.y, 6))
+			{
+				newCell = true;
+			}
+			//If Top right cell is alive && left cell is alive
+			else if (GetNeighbor(id.x, id.y, 1) && GetNeighbor(id.x, id.y, 2))
+			{
+				newCell = true;
+			}
+			else
+			{
+				false;
+			}
+		}
+	}
+	
+	return newCell;
+}
+
+float GetCreep(uint3 id)
+{	
+	int simIndex = (Simulations + RandIndex) % 4;
+	
+	float cellAmount = GetCellAmount(id.x, id.y);
+	float newCellAmount = cellAmount;
+	
+	float bAmount = GetNeighborAmount(id.x, id.y, 4);
+	float tAmount = GetNeighborAmount(id.x, id.y, 0);	
+	float lAmount = GetNeighborAmount(id.x, id.y, 2);
+	float rAmount = GetNeighborAmount(id.x, id.y, 6);
+	
+	int cCount = GetLessThanNeighborCount(id.x, id.y);
+	
+	int bCount = GetLessThanNeighborCount(id.x, id.y - 1);
+	int tCount = GetLessThanNeighborCount(id.x, id.y + 1);
+	int lCount = GetLessThanNeighborCount(id.x - 1, id.y);
+	int rCount = GetLessThanNeighborCount(id.x + 1, id.y);
+	
+	//Cell should first check its top neighbor
+	//If top neighbor has less than this cell and this cell is greater than 1
+	//		then this cell should decrease by 1
+	//Cell should then check if bottom cell
+	//If bottom neighbor has more than this cell and bottom neighbor has more than 1
+	//		then this cell should increase by one
+	
+	int nMin = -1;
+	
+	float gap;
+	float randAmount = round(random(id.x, id.y) * (cellAmount - 1));
+	float randNAmount;
+	
+	float mustMoveAmount = 0.0f;
+	
+	//simIndex = Simulations % 2;
+	//simIndex = 0;
+	
+	if (simIndex == 1)
+	{
+		//simIndex = 2;
+	}
+	
+	if (simIndex == 0) //Top
+	{
+		randNAmount = round(random(id.x, id.y - 1) * (bAmount - Cell_Min));
+			
+		if (tAmount < cellAmount && cellAmount > Cell_Min && id.y < YWidth - 1 && tAmount < Cell_Max && cCount > nMin)
+		{
+			gap = clamp(Cell_Max - tAmount, 0, cellAmount);
+			
+			newCellAmount -= clamp(randAmount, mustMoveAmount, gap);
+		}
+		
+		if (cellAmount < bAmount && bAmount > Cell_Min && cellAmount < Cell_Max && bCount > nMin)
+		{			
+			gap = clamp(Cell_Max - cellAmount, 0, bAmount);
+			
+			newCellAmount += clamp(randNAmount, mustMoveAmount, gap);
+		}
+	}
+	else if (simIndex == 1) //Left
+	{
+		randNAmount = round(random(id.x + 1, id.y) * (rAmount - Cell_Min));
+		
+		//If this cell has more than bottom and more than 1 and isn't at the edge
+		if (lAmount < cellAmount && cellAmount > Cell_Min && id.x > 0 && lAmount < Cell_Max && cCount > nMin)
+		{			
+			gap = clamp(Cell_Max - lAmount, 0, cellAmount);
+			
+			newCellAmount -= clamp(randAmount, mustMoveAmount, gap);
+		}
+	
+		//If this cell has less than top and top has more than 1 and isn't at the edge
+		if (cellAmount < rAmount && rAmount > Cell_Min && cellAmount < Cell_Max && rCount > nMin)
+		{			
+			gap = clamp(Cell_Max - cellAmount, 0, rAmount);
+			
+			newCellAmount += clamp(randNAmount, mustMoveAmount, gap);
+		}
+	}
+	else if (simIndex == 2) //Bottom
+	{
+		randNAmount = round(random(id.x, id.y + 1) * (tAmount - Cell_Min));
+		
+		//If this cell has more than bottom and more than 1 and isn't at the edge
+		if (bAmount < cellAmount && cellAmount > Cell_Min && id.y > 0 && bAmount < Cell_Max && cCount > nMin)
+		{			
+			gap = clamp(Cell_Max - bAmount, 0, cellAmount);
+			
+			newCellAmount -= clamp(randAmount, mustMoveAmount, gap);
+		}
+	
+		//If this cell has less than top and top has more than 1 and isn't at the edge
+		if (cellAmount < tAmount && tAmount > Cell_Min && cellAmount < Cell_Max && tCount > nMin)
+		{			
+			gap = clamp(Cell_Max - cellAmount, 0, tAmount);
+			
+			newCellAmount += clamp(randNAmount, mustMoveAmount, gap);
+		}
+	}
+	else if (simIndex == 3) //Right
+	{
+		randNAmount = round(random(id.x - 1, id.y) * (lAmount - Cell_Min));
+		
+		//If this cell has more than bottom and more than 1 and isn't at the edge
+		if (rAmount < cellAmount && cellAmount > Cell_Min && id.x < XWidth - 1 && rAmount < Cell_Max && cCount > nMin)
+		{			
+			gap = clamp(Cell_Max - rAmount, 0, cellAmount);
+			
+			newCellAmount -= clamp(randAmount, mustMoveAmount, gap);
+		}
+	
+		//If this cell has less than top and top has more than 1 and isn't at the edge
+		if (cellAmount < lAmount && lAmount > Cell_Min && cellAmount < Cell_Max && lCount > nMin)
+		{			
+			gap = clamp(Cell_Max - cellAmount, 0, lAmount);
+			
+			newCellAmount += clamp(randNAmount, mustMoveAmount, gap);
+		}
+	}
+	
+	/*
+	if (simIndex == 0) //Top
+	{		
+		//If this cell has more than bottom and more than 1 and isn't at the edge
+		if (tAmount < cellAmount && cellAmount > 1.0f && id.y < YWidth - 1 && tAmount < 5.0f && cCount > nMin)
+		{
+			newCellAmount -= 1.0f;
+		}
+	
+		//If this cell has less than top and top has more than 1 and isn't at the edge
+		if (cellAmount < bAmount && bAmount > 1.0f && cellAmount < 5.0f && bCount > nMin)
+		{
+			newCellAmount += 1.0f;
+		}
+	}
+	else if (simIndex == 1) //Left
+	{
+		//If this cell has more than bottom and more than 1 and isn't at the edge
+		if (lAmount < cellAmount && cellAmount > 1.0f && id.x > 0 && lAmount < 5.0f && cCount > nMin)
+		{
+			newCellAmount -= 1.0f;
+		}
+	
+		//If this cell has less than top and top has more than 1 and isn't at the edge
+		if (cellAmount < rAmount && rAmount > 1.0f && cellAmount < 5.0f && rCount > nMin)
+		{
+			newCellAmount += 1.0f;
+		}
+	}
+	else if (simIndex == 2) //Bottom
+	{
+		//If this cell has more than bottom and more than 1 and isn't at the edge
+		if (bAmount < cellAmount && cellAmount > 1.0f && id.y > 0 && bAmount < 5.0f && cCount > nMin)
+		{
+			newCellAmount -= 1.0f;
+		}
+	
+		//If this cell has less than top and top has more than 1 and isn't at the edge
+		if (cellAmount < tAmount && tAmount > 1.0f && cellAmount < 5.0f && tCount > nMin)
+		{
+			newCellAmount += 1.0f;
+		}
+	}
+	else if (simIndex == 3) //Right
+	{
+		//If this cell has more than bottom and more than 1 and isn't at the edge
+		if (rAmount < cellAmount && cellAmount > 1.0f && id.x < XWidth - 1 && rAmount < 5.0f && cCount > nMin)
+		{
+			newCellAmount -= 1.0f;
+		}
+	
+		//If this cell has less than top and top has more than 1 and isn't at the edge
+		if (cellAmount < lAmount && lAmount > 1.0f && cellAmount < 5.0f && lCount > nMin)
+		{
+			newCellAmount += 1.0f;			
+		}
+	}*/
+	
+	int xHalf = round(XWidth / 2.0f);
+	int yHalf = round(YWidth / 2.0f);
+	int width = 5;
+	
+	if (Emission_Enabled == 1.0f && id.x > xHalf - width && id.x < xHalf + width && id.y > yHalf - width && id.y < yHalf + width)
+	{
+		newCellAmount = Cell_Max;
+	}
+	
+	if (Emission_Enabled == 1.0f && id.x > xHalf - width && id.x < xHalf + width)
+	{
+		if (id.y < 2)
+		{
+			newCellAmount = 1;
+		}
+		else if (id.y < 4)
+		{
+			newCellAmount = 2;
+		}
+		else if (id.y < 6)
+		{
+			newCellAmount = 3;
+		}
+		else if (id.y < 8)
+		{
+			newCellAmount = 4;
+		}
+		else if (id.y < 10)
+		{
+			newCellAmount = 5;
+		}
+		else if (id.y < 12)
+		{
+			newCellAmount = 6;
+		}
+		else if (id.y < 14)
+		{
+			newCellAmount = 7;
+		}
+		else if (id.y < 16)
+		{
+			newCellAmount = 8;
+		}
+		else if (id.y < 18)
+		{
+			newCellAmount = 9;
+		}
+	}
+	
+	return newCellAmount;//clamp(newCellAmount, 1, 5);
+}
+
+[numthreads(8,8,1)]
+void CalculateFutureCells (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+	
+	if (!InBounds(id.x, id.y))
+	{		
+		return;
+	}		
+	
+	//Future_Cells_Buffer[LinearIndex(id.x, id.y)] = GetSand(id) ? 1 : 0;
+	//Future_Cells_Buffer[LinearIndex(id.x, id.y)] = GetCreep(id);
+	
+	//Random Move Amounts
+	//Future_Cells_Buffer[LinearIndex(id.x, id.y)] = round(random(id.x, id.y) * Cell_Max);
+	
+	//Random Move Directions
+	float index = clamp(0, 3, floor(random(id.x, id.y) * 4));
+	Future_Cells_Buffer[LinearIndex(id.x, id.y)] = index + 1;
+
+}
+
+[numthreads(8, 8, 1)]
+void CopyFutureCellsToCells(uint3 id : SV_DispatchThreadID)
+{
+	if (!InBounds(id.x, id.y))
+	{
+		return;
+	}	
+	
+	int linearIndex = LinearIndex(id.x, id.y);
+	
+	Cells_Buffer[linearIndex] = Future_Cells_Buffer[linearIndex];
+
+}
+
+[numthreads(8, 8, 1)]
+void CreateTexture(uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+	
+	if (!InBounds(id.x, id.y))
+	{
+		return;
+	}	
+	
+	//float a = GetCell(id.x, id.y) ? Color.a : 0;
+	float amount = (Use_Cell_Average == 1.0f) ? GetAverageCellAmount(id.x, id.y) : GetCellAmount(id.x, id.y);
+	float4 c = Color;
+	
+	float4 red = float4(1, 0, 0, 1);
+	float4 orange = float4(1.0f, 0.5f, 0, 1);
+	float4 yellow = float4(1, 1, 0, 1);
+	float4 lightGreen = float4(0.5f, 1, 0, 1);
+	float4 green = float4(0, 1.0f, 0, 1);
+	float4 lightBlue = float4(0, 1, 1, 1);
+	float4 blue = float4(0, 0, 1, 1);
+	float4 purple = float4(0.5f, 0, 1, 1);
+	float4 pink = float4(1, 0, 0.5f, 1);
+	
+	if (amount < 1.0f)
+	{
+		c = float4(0, 0, 0, 0);
+	}
+	else if (amount < 2.0f)
+	{
+		c = red;
+	}
+	else if (amount < 3.0f)
+	{
+		c = orange;
+	}
+	else if (amount < 4.0f)
+	{
+		c = yellow;
+	}
+	else if (amount < 5.0f)
+	{
+		c = lightGreen;
+	}
+	else if (amount < 6.0f)
+	{
+		c = green;
+	}
+	else if (amount < 7.0f)
+	{
+		c = lightBlue;
+	}
+	else if (amount < 8.0f)
+	{
+		c = blue;
+	}
+	else if (amount < 9.0f)
+	{
+		c = purple;
+	}
+	else if (amount < 10.0f)
+	{
+		c = pink;
+	}
+	else
+	{
+		c = float4(0, 0, 0, 1);
+	}
+	
+	Result[id.xy] = float4(c.r, c.g, c.b, c.a);	
+}

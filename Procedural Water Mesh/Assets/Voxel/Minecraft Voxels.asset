@@ -1,0 +1,150 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 60e95362c08615c4098bde9a0c5d247f, type: 3}
+  m_Name: Minecraft Voxels
+  m_EditorClassIdentifier: 
+  collectionID: minecraft
+  icon: {fileID: 2800000, guid: 4c1f1a9568fc8114ea7a051bdc96f3a4, type: 3}
+  voxels:
+  - id: acacia_planks
+    textureIDs:
+    - minecraft:acacia_planks
+    - minecraft:acacia_planks
+    - minecraft:acacia_planks
+    - minecraft:acacia_planks
+    - minecraft:acacia_planks
+    - minecraft:acacia_planks
+    type: 0
+    textureMode: 0
+  - id: air
+    textureIDs:
+    - base:none
+    - base:none
+    - base:none
+    - base:none
+    - base:none
+    - base:none
+    type: 1
+    textureMode: 0
+  - id: animated
+    textureIDs:
+    - custom:animated
+    - custom:animated
+    - custom:animated
+    - custom:animated
+    - custom:animated
+    - custom:animated
+    type: 0
+    textureMode: 0
+  - id: crafting_table
+    textureIDs:
+    - minecraft:crafting_table_top
+    - minecraft:acacia_planks
+    - minecraft:crafting_table_side
+    - minecraft:crafting_table_side
+    - minecraft:crafting_table_front
+    - minecraft:crafting_table_side
+    type: 0
+    textureMode: 1
+  - id: dirt
+    textureIDs:
+    - minecraft:dirt
+    - minecraft:dirt
+    - minecraft:dirt
+    - minecraft:dirt
+    - minecraft:dirt
+    - minecraft:dirt
+    type: 0
+    textureMode: 0
+  - id: farmland
+    textureIDs:
+    - minecraft:farmland
+    - minecraft:dirt
+    - minecraft:dirt
+    - minecraft:dirt
+    - minecraft:dirt
+    - minecraft:dirt
+    type: 0
+    textureMode: 2
+  - id: grass
+    textureIDs:
+    - minecraft:grass_top
+    - minecraft:dirt
+    - minecraft:grass_side
+    - minecraft:grass_side
+    - minecraft:grass_side
+    - minecraft:grass_side
+    type: 0
+    textureMode: 3
+  - id: log
+    textureIDs:
+    - minecraft:log_top
+    - minecraft:log_top
+    - minecraft:log_sides
+    - minecraft:log_sides
+    - minecraft:log_sides
+    - minecraft:log_sides
+    type: 0
+    textureMode: 3
+  - id: purpur
+    textureIDs:
+    - minecraft:purpur
+    - minecraft:purpur
+    - minecraft:purpur
+    - minecraft:purpur
+    - minecraft:purpur
+    - minecraft:purpur
+    type: 0
+    textureMode: 0
+  - id: quartz_pillar
+    textureIDs:
+    - minecraft:quartz_pillar_top
+    - minecraft:quartz_pillar_top
+    - minecraft:quartz_pillar_side
+    - minecraft:quartz_pillar_side
+    - minecraft:quartz_pillar_side
+    - minecraft:quartz_pillar_side
+    type: 0
+    textureMode: 3
+  - id: stone
+    textureIDs:
+    - minecraft:stone
+    - minecraft:stone
+    - minecraft:stone
+    - minecraft:stone
+    - minecraft:stone
+    - minecraft:stone
+    type: 0
+    textureMode: 0
+  - id: water
+    textureIDs:
+    - minecraft:water
+    - minecraft:water
+    - minecraft:water
+    - minecraft:water
+    - minecraft:water
+    - minecraft:water
+    type: 0
+    textureMode: 0
+  voxelIDs:
+  - acacia_planks
+  - air
+  - animated
+  - crafting_table
+  - dirt
+  - farmland
+  - grass
+  - log
+  - purpur
+  - quartz_pillar
+  - stone
+  - water

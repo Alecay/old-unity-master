@@ -1,0 +1,159 @@
+﻿
+#include "Includes/NOISE_SIMPLEX_FUNC.hlsl"
+
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel GenerateNoise
+#pragma kernel CreateTexture
+
+uint XWidth = 10;
+uint YWidth = 10;
+
+uint Seed = 42;
+uint Octaves = 5;
+
+float Scale = 100.0f;
+
+float Persistance = 0.5f;
+float Lacunarity = 2.0f;
+
+float2 Offset = float2(0, 0);
+
+float4 Color = float4(1, 1, 1, 1);
+
+RWStructuredBuffer<float> Noise_Values_Buffer;
+RWTexture2D<float4> Result;
+
+float inverse_lerp(float a, float b, float l)
+{
+	return clamp((l - a) / (b - a), 0, 1);
+}
+
+int LinearIndex(uint x, uint y)
+{
+	return x + y * XWidth;
+}
+
+bool InBounds(uint x, uint y)
+{
+	return x >= 0 && x < XWidth && y >= 0 && y < YWidth;
+}
+
+float NoiseHeight(uint x, uint y)
+{
+	float minScale = 1.0f / 10000.0f;
+	
+	if (Scale < minScale)
+	{
+		Scale = minScale;
+	}
+	
+	float amplitude = 1;
+	float frequency = 1;
+	float noiseHeight = 0;
+	
+	float sampleX = 0;
+	float sampleY = 0;
+	float perlinValue = 0;
+	
+	float halfXWidth = XWidth / 2.0f;
+	float halfYWidth = YWidth / 2.0f;
+	
+	float maxPerlinValue = 0;
+	
+	for (uint i = 0; i < Octaves; i++)
+	{
+		maxPerlinValue += amplitude;
+		
+		amplitude *= Persistance;
+	}
+	
+	amplitude = 1;
+	
+	float seedX = lerp(-1000, 1000, (snoise(float2(Seed, Seed + 1)) + 1) / 2.0f);
+	float seedY = lerp(-1000, 1000, (snoise(float2(Seed + 1, Seed)) + 1) / 2.0f);
+	
+	for (uint j = 0; j < Octaves; j++)
+	{
+		
+		
+		sampleX = ((x - halfXWidth + Offset.x) / Scale * frequency) + seedX + (j + 1);
+		sampleY = ((y - halfYWidth + Offset.y) / Scale * frequency) + seedY + (j + 1);
+		
+		perlinValue = snoise(float2(sampleX, sampleY));
+		perlinValue = (perlinValue + 1) / 2.0f;
+
+		noiseHeight += perlinValue * amplitude;
+		
+		amplitude *= Persistance;
+		frequency *= Lacunarity;
+
+	}
+	
+	noiseHeight = inverse_lerp(0.5f, maxPerlinValue * 0.81f, noiseHeight);
+	
+	return noiseHeight;
+}
+
+[numthreads(8, 8, 1)]
+void GenerateNoise(uint3 coordinate : SV_DispatchThreadID)
+{
+	if (coordinate.x >= XWidth || coordinate.y >= YWidth)
+	{
+		return;
+	}
+	
+	Noise_Values_Buffer[coordinate.x + coordinate.y * XWidth] = NoiseHeight(coordinate.x, coordinate.y);
+
+}
+
+[numthreads(8, 8, 1)]
+void CreateTexture(uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+	
+	if (!InBounds(id.x, id.y))
+	{
+		return;
+	}
+	
+	float4 red = float4(1, 0, 0, 1);
+	float4 orange = float4(1.0f, 0.5f, 0, 1);
+	float4 yellow = float4(1, 1, 0, 1);
+	float4 lightGreen = float4(0.5f, 1, 0, 1);
+	float4 green = float4(0, 1.0f, 0, 1);
+	float4 lightBlue = float4(0, 1, 1, 1);
+	float4 blue = float4(0, 0, 1, 1);
+	float4 purple = float4(0.5f, 0, 1, 1);
+	float4 pink = float4(1, 0, 0.5f, 1);
+	
+	
+	//float a = GetCell(id.x, id.y) ? Color.a : 0;
+	float height = NoiseHeight(id.x, id.y);
+	float4 c = Color;	
+	
+	float index = clamp(0, 3, floor(height * 4));
+	
+	if (index <= 0)
+	{
+		c = red;
+	}
+	else if (index <= 1)
+	{
+		c = orange;
+	}
+	else if (index <= 2)
+	{
+		c = yellow;
+	}
+	else if (index <= 3)
+	{
+		c = green;
+	}
+	else if (index <= 4)
+	{
+		c = blue;
+	}
+	
+	Result[id.xy] = c;
+	//Result[id.xy] = float4(c.r, c.g, c.b, lerp(0, 1, height));
+}

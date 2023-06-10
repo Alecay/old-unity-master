@@ -1,0 +1,171 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CalculateFutureDensity
+
+int XWidth = 10;
+int YWidth = 10;
+
+uint Simulation_Count = 0;
+
+float FlowMin = 1;
+float FlowMax = 10;
+
+//Terrain Hieght for each cell
+RWStructuredBuffer<float> Heights_Buffer;
+
+//Density of each cell
+RWStructuredBuffer<float> Density_Buffer;
+RWStructuredBuffer<float> Future_Density_Buffer;
+
+uint LinearIndex(int x, int y)
+{
+	return x + y * XWidth;
+}
+
+bool InBounds(int x, int y)
+{
+	return x >= 0 && x < XWidth && y >= 0 && y < YWidth;
+}
+
+bool IsLowerHeight(uint x, uint y, int nx, int ny)
+{
+	if (!InBounds((int) x + nx, (int) y + ny) || (nx == 0 && ny == 0))
+	{
+		return false;
+	}
+	
+	return Heights_Buffer[LinearIndex(x + nx, y + ny)] < Heights_Buffer[LinearIndex(x, y)];
+}
+
+bool IsHigherHeight(uint x, uint y, int nx, int ny)
+{
+	if (!InBounds((int) x + nx, (int) y + ny) || (nx == 0 && ny == 0))
+	{
+		return false;
+	}
+	
+	return Heights_Buffer[LinearIndex(x + nx, y + ny)] > Heights_Buffer[LinearIndex(x, y)];
+}
+
+uint GetLowerHeightNeighbors(uint x, uint y)
+{
+	uint count = 0;
+	int X = 0;
+	int Y = 0;
+	
+	for (int nx = -1; nx < 2; nx++)
+	{
+		for (int ny = -1; ny < 2; nx++)
+		{
+			if (IsLowerHeight(x, y, nx, ny))
+			{
+				count++;
+			}
+		}
+	}
+
+	return count;
+}
+
+bool IsLowerDensity(uint x, uint y, int nx, int ny)
+{
+	if (!InBounds((int) x + nx, (int) y + ny) || (nx == 0 && ny == 0))
+	{
+		return false;
+	}
+	
+	return Density_Buffer[LinearIndex(x + nx, y + ny)] < Density_Buffer[LinearIndex(x, y)];
+}
+
+bool IsHigherDensity(uint x, uint y, int nx, int ny)
+{
+	if (!InBounds((int) x + nx, (int) y + ny) || (nx == 0 && ny == 0))
+	{
+		return false;
+	}
+	
+	return Density_Buffer[LinearIndex(x + nx, y + ny)] > Density_Buffer[LinearIndex(x, y)];
+}
+
+float FlowAmount(int x, int y, int nx, int ny)
+{
+	if (!InBounds(x + nx, y + ny) || (nx == 0 && ny == 0))
+	{
+		return 0;
+	}
+	
+	float h = Heights_Buffer[LinearIndex(x, y)];
+	float nh = Heights_Buffer[LinearIndex(x + nx, y + ny)];
+	
+	float d = Density_Buffer[LinearIndex(x, y)];
+	float nd = Density_Buffer[LinearIndex(x + nx, y + ny)];
+	
+	bool canFlow = d > FlowMin && nd < FlowMax && (h + d) > (nh + nd);
+	
+	if (!canFlow)
+	{
+		return 0;
+	}
+	
+	return 1;
+}
+
+float GetFutureCellDensity(int x, int y)
+{
+	int nx = 0;
+	int ny = 0;
+	
+	float newDensity = Density_Buffer[LinearIndex(x, y)];
+	
+	uint sideIndex = Simulation_Count % 4;
+	
+	
+	if (sideIndex == 3 && false)
+	{
+		//Down
+		nx = 0;
+		ny = -1;
+		
+	}
+	else if (sideIndex == 1 || true) //Actually Down
+	{
+		//Up
+		nx = 0;
+		ny = 1;
+		
+	}
+	else if (sideIndex == 2)
+	{
+		//Left
+		nx = -1;
+		ny = 0;		
+	}
+	else
+	{
+		//Right
+		nx = 1;
+		ny = 0;
+	}
+	
+	if (y == 0 && sideIndex == 1)
+	{
+		return newDensity;
+	}
+	
+	float flowAmount = FlowAmount(x, y, nx, ny);
+	float nFlowAmount = FlowAmount(x + nx, y + ny, -nx, -ny);
+	
+	newDensity = newDensity - flowAmount + nFlowAmount;
+	
+	return newDensity;
+}
+
+[numthreads(8,8,1)]
+void CalculateFutureDensity(uint3 coordinate : SV_DispatchThreadID)
+{
+	if (!InBounds((int) coordinate.x, (int) coordinate.y))
+	{
+		return;
+	}
+
+	Future_Density_Buffer[LinearIndex((int) coordinate.x, (int) coordinate.y)] = GetFutureCellDensity((int) coordinate.x, (int) coordinate.y);
+}

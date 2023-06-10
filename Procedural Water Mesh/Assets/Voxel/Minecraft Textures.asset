@@ -1,0 +1,108 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f89eeee0ab27e31468f1371bd2fbb2fc, type: 3}
+  m_Name: Minecraft Textures
+  m_EditorClassIdentifier: 
+  collectionID: minecraft
+  icon: {fileID: 2800000, guid: db99014dff2412248a0289ac4fc10c77, type: 3}
+  textures:
+  - id: acacia_planks
+    textures:
+    - {fileID: 2800000, guid: af21388f8e396d645ba3b0748aac2a19, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: crafting_table_front
+    textures:
+    - {fileID: 2800000, guid: db99014dff2412248a0289ac4fc10c77, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: crafting_table_side
+    textures:
+    - {fileID: 2800000, guid: 8e0b21b09c8d23242a21ad1f04bd176b, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: crafting_table_top
+    textures:
+    - {fileID: 2800000, guid: 4c1f1a9568fc8114ea7a051bdc96f3a4, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: dirt
+    textures:
+    - {fileID: 2800000, guid: f16db3048d0199346aa69ff3cbb1c562, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: farmland
+    textures:
+    - {fileID: 2800000, guid: 4cf93491f764ed547960a864f1703a5b, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: grass_side
+    textures:
+    - {fileID: 2800000, guid: 36dc7469bdd0b9b42b11b2d1fec2e9ce, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: grass_top
+    textures:
+    - {fileID: 2800000, guid: f248e65e97354684d9881ddc4ce936de, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: log_sides
+    textures:
+    - {fileID: 2800000, guid: 7eadf6f2ffd5d704ea2705ff73235150, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: log_top
+    textures:
+    - {fileID: 2800000, guid: 88a7a8924cbcaa94fbf6fddfea15eb15, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: purpur
+    textures:
+    - {fileID: 2800000, guid: 7319aaee1cea58c4c93d5eebd538cef7, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: quartz_pillar_side
+    textures:
+    - {fileID: 2800000, guid: d4b00deedca898141bfc6b3cbd59e0d1, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: quartz_pillar_top
+    textures:
+    - {fileID: 2800000, guid: 785b0a414827a5c438fe4849d8533e08, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: stone
+    textures:
+    - {fileID: 2800000, guid: 2d6c9efa25462a94086bc1a758ffeff7, type: 3}
+    animationSpeed: 0
+    type: 0
+  - id: water
+    textures:
+    - {fileID: 2800000, guid: e5d3c0e7e610c55478eefd518a1908cc, type: 3}
+    animationSpeed: 0
+    type: 0
+  textureIDs:
+  - acacia_planks
+  - crafting_table_front
+  - crafting_table_side
+  - crafting_table_top
+  - dirt
+  - farmland
+  - grass_side
+  - grass_top
+  - log_sides
+  - log_top
+  - purpur
+  - quartz_pillar_side
+  - quartz_pillar_top
+  - stone
+  - water

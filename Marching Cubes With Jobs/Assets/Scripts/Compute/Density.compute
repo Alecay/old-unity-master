@@ -1,0 +1,250 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Main
+
+#include "NOISE_SIMPLEX_FUNC.hlsl"
+
+uint Seed = 42;
+uint Octaves = 5;
+
+float Scale = 100.0f;
+
+float Persistance = 0.5f;
+float Lacunarity = 2.0f;
+
+float3 Offset = float3(0, 0, 0);
+
+uint Width = 16;
+uint Height = 128;
+
+int Step;
+
+RWStructuredBuffer<float> Density_Values_Buffer;
+
+float inverse_lerp(float a, float b, float l)
+{
+	return clamp((l - a) / (b - a), 0, 1);
+}
+
+float Noise2D(float x, float y, int seed, float scale, uint octaves, float persistance, float lacunarity, float2 offset)
+{
+	float minScale = 1.0f / 10000.0f;
+	
+	if (scale < minScale)
+	{
+		scale = minScale;
+	}
+	
+	float amplitude = 1;
+	float frequency = 1;
+	float noiseValue = 0;
+	
+	float sampleX = 0;
+	float sampleY = 0;
+	float perlinValue = 0;
+	
+	float maxPerlinValue = 0;
+	
+	for (uint i = 0; i < octaves; i++)
+	{
+		maxPerlinValue += amplitude;
+		
+		amplitude *= persistance;
+	}
+	
+	amplitude = 1;
+	
+	float seedX = lerp(-1000, 1000, (snoise(float2(seed, seed + 1)) + 1) / 2.0f);
+	float seedY = lerp(-1000, 1000, (snoise(float2(seed + 1, seed)) + 1) / 2.0f);
+	
+	for (uint j = 0; j < octaves; j++)
+	{
+		sampleX = ((x + offset.x) / scale * frequency) + seedX + (j + 1);
+		sampleY = ((y + offset.y) / scale * frequency) + seedY + (j + 1);
+		
+		perlinValue = snoise(float2(sampleX, sampleY));
+
+		noiseValue += perlinValue * amplitude;
+		
+		amplitude *= persistance;
+		frequency *= lacunarity;
+
+	}
+	
+	return noiseValue;
+}
+
+float Noise3D(float x, float y, float z, int seed, float scale, uint octaves, float persistance, float lacunarity, float3 offset)
+{
+	float minScale = 1.0f / 10000.0f;
+	
+	if (scale < minScale)
+	{
+		scale = minScale;
+	}
+	
+	float amplitude = 1;
+	float frequency = 1;
+	float noiseHeight = 0;
+	
+	float sampleX = 0;
+	float sampleY = 0;
+	float sampleZ = 0;
+	float perlinValue = 0;	
+	
+	float maxPerlinValue = 0;
+	
+	for (uint i = 0; i < octaves; i++)
+	{
+		maxPerlinValue += amplitude;
+		
+		amplitude *= persistance;
+	}
+	
+	amplitude = 1;
+	
+	float seedX = lerp(-1000, 1000, (snoise(float2(seed, seed + 1)) + 1) / 2.0f);
+	float seedY = lerp(-1000, 1000, (snoise(float2(seed + 1, seed)) + 1) / 2.0f);
+	float seedZ = lerp(-1000, 1000, (snoise(float2(seed + 1, seed + 1)) + 1) / 2.0f);
+	
+	for (uint j = 0; j < octaves; j++)
+	{				
+		sampleX = ((x + offset.x) / scale * frequency) + seedX + (j + 1);
+		sampleY = ((y + offset.y) / scale * frequency) + seedY + (j + 1);
+		sampleZ = ((z + offset.z) / scale * frequency) + seedZ + (j + 1);
+		
+		perlinValue = snoise(float3(sampleX, sampleY, sampleZ));
+		//perlinValue = (perlinValue + 1) / 2.0f;
+
+		noiseHeight += perlinValue * amplitude;
+		
+		amplitude *= Persistance;
+		frequency *= Lacunarity;
+
+	}
+	
+	return noiseHeight;
+}
+
+float GetNoise01(float noise)
+{
+	return (noise + 1) / 2.0f;
+}
+
+float GetSteppedNoise(float noise, float step)
+{
+	return round(noise * step) / step;
+}
+
+int LinearIndex(int x, int y, int z, int width)
+{
+	return x + z * width + y * width * width;
+}
+
+float GetRadialDensity(int3 center, int3 worldPoint, float radius)
+{
+	float dist = distance(center, worldPoint);
+	
+	if (dist <= radius)
+	{
+		return lerp(-1, 0, (dist / radius));
+	}
+		
+	return lerp(0, 1, (dist - radius) / radius);
+
+}
+
+float GetRadialDensityWithNoise(int3 center, int3 worldPoint, float radius, float nValue, float heightMultiplier)
+{
+	float3 towardsCenter = normalize(worldPoint - center);	
+	float dist = distance(center, worldPoint);
+	
+	nValue = GetNoise01(nValue);
+	
+	float calRadius = radius + nValue * heightMultiplier;		
+	
+	if (dist <= calRadius)
+	{
+		return lerp(-1, 0, (dist / calRadius));
+	}
+		
+	return lerp(0, 1, (dist - calRadius) / calRadius);
+}
+
+float GetLandscapeDensity(int3 worldPoint, float nValue, float heightMultiplier)
+{
+	
+	float density = 0;
+	float height = clamp(nValue, -1, 1) * heightMultiplier;	
+	
+	float actualY = (float) worldPoint.y + Offset.y;
+	
+	float dist = actualY - heightMultiplier;
+	
+	//density = clamp(nValue - (dist / heightMultiplier), -1, 1);
+	
+	if (actualY < heightMultiplier)
+	{
+		density = clamp(nValue - (dist / (heightMultiplier * 0.5f)), -1, 1);
+	}
+	else
+	{
+		density = clamp(nValue - (dist / (heightMultiplier * 2.0f)), -1, 1);
+	}
+	
+	return density * -1;
+}
+
+float GetHeightMapDensity(int3 worldPoint, float nValue, float heightMultiplier)
+{
+	
+	float density = 0;
+	float height = GetNoise01(nValue) * heightMultiplier + 10;
+	
+	float actualY = (float) worldPoint.y + Offset.y ;
+	
+	float dist = actualY - height;
+	
+	//density = clamp(nValue - (dist / heightMultiplier), -1, 1);
+	
+	if (actualY < height)
+	{
+		density = lerp(-1, 0, actualY / height);
+	}
+	else
+	{
+		density = lerp(0, 1, (actualY - height) / height);
+	}
+	
+	return density;
+}
+
+[numthreads(8,8,1)]
+void Main(uint3 coordinate : SV_DispatchThreadID)
+{
+	if (coordinate.x >= Width || coordinate.y >= Height || coordinate.z >= Width)
+	{
+		return;
+	}
+	
+	int index = LinearIndex(coordinate.x, coordinate.y, coordinate.z, Width);
+
+	float nValue = Noise3D(coordinate.x, coordinate.y, coordinate.z, Seed, Scale, Octaves, Persistance, Lacunarity, Offset);
+	float nValue2D = Noise2D(coordinate.x, coordinate.z, Seed, Scale, Octaves, Persistance, Lacunarity, float2(Offset.x, Offset.z));
+	nValue2D = clamp(nValue2D, -1, 1);
+	float density;
+	
+	float3 center = float3(32* 8, -64, 32 * 8);
+	float3 point3D = float3(coordinate.x, coordinate.y, coordinate.z) + Offset;
+	
+	//density = GetRadialDensityWithNoise(center, point3D, 32 * 8, nValue, 32);
+	
+	//density = GetRadialDensity(center, point3D, 50);
+	
+	//density = GetLandscapeDensity(coordinate, nValue, Scale / 5);
+	
+	density = GetHeightMapDensity(coordinate, nValue2D, Height * 0.9f);
+	
+	//density = GetSteppedNoise(density, 10);
+	
+	Density_Values_Buffer[index] = density;
+}

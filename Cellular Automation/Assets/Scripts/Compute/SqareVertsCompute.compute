@@ -1,0 +1,183 @@
+﻿#pragma kernel Main
+#pragma kernel Cube
+
+#include "ProceduralMeshComputeHelpers.hlsl"
+
+// This describes a vertex on the source mesh
+struct SourceVertex
+{
+	float3 positionOS; // position in object space
+	float2 uv; // UV
+};
+// This describes a vertex on the generated mesh
+struct DrawVertex
+{
+	float3 positionWS; // position in world space
+	float2 uv; // UV
+};
+// We have to insert three draw vertices at once so the triangle stays connected
+// in the graphics shader. This structure does that
+struct DrawTriangle
+{
+	float3 normalWS; // normal in world space. All points share this normal
+	DrawVertex vertices[3];
+};
+
+// Compute buffers
+StructuredBuffer<SourceVertex> _SourceVertices;
+StructuredBuffer<int> _SourceTriangles;
+AppendStructuredBuffer<DrawTriangle> _DrawTriangles;
+
+// Other variables set by the renderer script
+int _NumSourceTriangles;
+float _PyramidHeight;
+float4x4 _LocalToWorld;
+
+// This converts a source vertex into a draw vertex by converting from OS to WS
+SourceVertex NewSourceVertex(float3 position, float2 uv)
+{
+	SourceVertex s;
+	s.positionOS = position;
+	s.uv = uv;
+	return s;
+}
+
+// This converts a source vertex into a draw vertex by converting from OS to WS
+DrawVertex TransformToWorldSpace(SourceVertex v)
+{
+	DrawVertex o;
+	o.positionWS = mul(_LocalToWorld, float4(v.positionOS, 1)).xyz;
+	o.uv = v.uv;
+	return o;
+}
+
+void SetupAndOutputTriangle(DrawVertex a, DrawVertex b, DrawVertex c)
+{
+    // Since we extrude the center face, the normal must be recalculated
+	float3 normalWS = GetNormalFromTriangle(a.positionWS, b.positionWS, c.positionWS);
+
+    // Create a draw triangle from three points
+	DrawTriangle tri;
+	tri.normalWS = normalWS;
+	tri.vertices[0] = a;
+	tri.vertices[1] = b;
+	tri.vertices[2] = c;
+
+    // Add the output tri to the output buffer
+	_DrawTriangles.Append(tri);
+}
+
+void AddCubeToDrawBuffer(float3 center, float size)
+{
+	float3 centeredOffset = float3(-0.5f, -0.5f, -0.5f) * size + center;
+	
+	SourceVertex inputs[8];
+	inputs[0] = NewSourceVertex(float3(0, 0, 0) * size + centeredOffset, float2(0, 0));
+	inputs[1] = NewSourceVertex(float3(0, 0, 1) * size + centeredOffset, float2(0, 1));
+	inputs[2] = NewSourceVertex(float3(1, 0, 1) * size + centeredOffset, float2(1, 1));
+	inputs[3] = NewSourceVertex(float3(1, 0, 0) * size + centeredOffset, float2(1, 0));
+	
+	inputs[4] = NewSourceVertex(float3(0, 1, 0) * size + centeredOffset, float2(0, 0));
+	inputs[5] = NewSourceVertex(float3(0, 1, 1) * size + centeredOffset, float2(0, 1));
+	inputs[6] = NewSourceVertex(float3(1, 1, 1) * size + centeredOffset, float2(1, 1));
+	inputs[7] = NewSourceVertex(float3(1, 1, 0) * size + centeredOffset, float2(1, 0));
+	
+	DrawVertex worldPositions[8];
+	
+	worldPositions[0] = TransformToWorldSpace(inputs[0]);
+	worldPositions[1] = TransformToWorldSpace(inputs[1]);
+	worldPositions[2] = TransformToWorldSpace(inputs[2]);
+	worldPositions[3] = TransformToWorldSpace(inputs[3]);
+
+	worldPositions[4] = TransformToWorldSpace(inputs[4]);
+	worldPositions[5] = TransformToWorldSpace(inputs[5]);
+	worldPositions[6] = TransformToWorldSpace(inputs[6]);
+	worldPositions[7] = TransformToWorldSpace(inputs[7]);
+
+    // Create the triangles.
+    // Triangles must wind clockwise or they will not render by default
+	
+	//Top
+	SetupAndOutputTriangle(worldPositions[2], worldPositions[1], worldPositions[0]);
+	SetupAndOutputTriangle(worldPositions[3], worldPositions[2], worldPositions[0]);
+	
+	//Bottom
+	SetupAndOutputTriangle(worldPositions[4], worldPositions[5], worldPositions[6]);
+	SetupAndOutputTriangle(worldPositions[4], worldPositions[6], worldPositions[7]);
+	
+	//Left
+	SetupAndOutputTriangle(worldPositions[1], worldPositions[5], worldPositions[4]);
+	SetupAndOutputTriangle(worldPositions[1], worldPositions[4], worldPositions[0]);
+	
+	//Right
+	SetupAndOutputTriangle(worldPositions[3], worldPositions[7], worldPositions[6]);
+	SetupAndOutputTriangle(worldPositions[3], worldPositions[6], worldPositions[2]);
+	
+	//Forward
+	SetupAndOutputTriangle(worldPositions[2], worldPositions[6], worldPositions[5]);
+	SetupAndOutputTriangle(worldPositions[2], worldPositions[5], worldPositions[1]);
+	
+	//Back
+	SetupAndOutputTriangle(worldPositions[0], worldPositions[4], worldPositions[7]);
+	SetupAndOutputTriangle(worldPositions[0], worldPositions[7], worldPositions[3]);
+}
+
+// This is the number of threads to create per dispatch. This kernel only uses the
+// x value, so you can fine tune that if needed
+[numthreads(128, 1, 1)]
+void Main(uint3 id : SV_DispatchThreadID)
+{
+    // Disptaches can only be in chunks of 128, there might be more threads than number
+    // of triangles. Return in that case
+	if ((int) id.x >= _NumSourceTriangles)
+	{
+		return;
+	}
+
+    // Get the vertices which make up this triangle
+    // The triangle array contains indices to the vertex array
+    // Three values in the triangle array describe one triangle in the source mesh
+	int triStart = id.x * 3;
+	DrawVertex inputs[3];
+	inputs[0] = TransformToWorldSpace(_SourceVertices[_SourceTriangles[triStart]]);
+	inputs[1] = TransformToWorldSpace(_SourceVertices[_SourceTriangles[triStart + 1]]);
+	inputs[2] = TransformToWorldSpace(_SourceVertices[_SourceTriangles[triStart + 2]]);
+
+	DrawVertex center;
+    // We need the triangle's normal to extrude the center point
+	float3 triNormal = GetNormalFromTriangle(inputs[0].positionWS, inputs[1].positionWS, inputs[2].positionWS);
+    // Find the center position and extrude by _PyramidHeight along the normal
+	center.positionWS = GetTriangleCenter(inputs[0].positionWS, inputs[1].positionWS, inputs[2].positionWS) + triNormal * _PyramidHeight;
+    // Average the UVs as well
+	center.uv = GetTriangleCenter(inputs[0].uv, inputs[1].uv, inputs[2].uv);
+
+    // Create the three triangles.
+    // Triangles must wind clockwise or they will not render by default
+	SetupAndOutputTriangle(inputs[0], inputs[1], center);
+	SetupAndOutputTriangle(inputs[1], inputs[2], center);
+	SetupAndOutputTriangle(inputs[2], inputs[0], center);
+}
+
+// This is the number of threads to create per dispatch. This kernel only uses the
+// x value, so you can fine tune that if needed
+[numthreads(128, 1, 1)]
+void Cube(uint3 id : SV_DispatchThreadID)
+{
+    // Disptaches can only be in chunks of 128, there might be more threads than number
+    // of triangles. Return in that case
+	
+	uint length, stride;
+	_SourceVertices.GetDimensions(length, stride);
+	
+	if ((int) id.x >= length)
+	{
+		return;
+	}
+
+	//AddCubeToDrawBuffer(float3(0,0,0), _PyramidHeight);
+	//return;
+	
+	AddCubeToDrawBuffer(_SourceVertices[id.x].positionOS, _PyramidHeight);
+	//AddCubeToDrawBuffer(inputs[1].positionOS, _PyramidHeight);
+	//AddCubeToDrawBuffer(inputs[2].positionOS, _PyramidHeight);
+}

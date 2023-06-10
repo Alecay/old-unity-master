@@ -1,0 +1,754 @@
+﻿#pragma kernel TriToVertCount
+#pragma kernel CalculateBounds
+#pragma kernel CalculateTriangleCountPerVoxel
+#pragma kernel CalculateOverallTriangleCount
+#pragma kernel CreateDrawTriangles
+#pragma kernel CreateMeshDataFromDrawTriangles
+#pragma kernel CalculateFirstCloseIndices
+#pragma kernel CalculateUniqueCount
+#pragma kernel CalculateUniqueVertices
+#pragma kernel CalculateUniqueTriangles
+
+#include "Includes/MarchTables.hlsl"
+#include "Includes/DrawTriangles.hlsl"
+
+
+static const int numThreads = 8;
+
+//Holds a the density value for each point
+RWStructuredBuffer<float> _Density_Values_Buffer;
+
+RWStructuredBuffer<int> _Triangles_Per_Voxel_Buffer;
+RWStructuredBuffer<int> _Triangle_Index_Buffer;
+RWStructuredBuffer<int> _Overall_Triangle_Count_Buffer;
+
+RWStructuredBuffer<DrawTriangle> _Draw_Triangles_Buffer;
+
+RWStructuredBuffer<float3> _Vertices_Buffer;
+RWStructuredBuffer<int> _Triangles_Buffer;
+
+
+RWStructuredBuffer<int> _First_Close_Index_Buffer;
+RWStructuredBuffer<int> _Unique_Indices_Buffer;
+RWStructuredBuffer<int> _Unique_Count_Buffer;
+
+RWStructuredBuffer<float3> _Unique_Vertices_Buffer;
+
+int numPointsPerAxis;
+float isoLevel;
+bool interpolate;
+
+int meshSimplificationLevel = 0; // 0 no simiplifcation
+
+uint triangleCount = 0;
+uint uniqueCount = 0;
+
+float3 interpolateVerts(float4 v1, float4 v2)
+{
+	float t = (isoLevel - v1.w) / (v2.w - v1.w);
+	return v1.xyz + t * (v2.xyz - v1.xyz);
+}
+
+int indexFromCoord(int x, int y, int z)
+{
+	return z * numPointsPerAxis * numPointsPerAxis + y * numPointsPerAxis + x;
+}
+
+int indexFromCoord(int3 id)
+{
+	return indexFromCoord(id.x, id.y, id.z);
+}
+
+float2 GetUV(float3 p)
+{
+	float2 uv;
+	
+	uv = float2(p.x / (float) numPointsPerAxis, p.z / (float) numPointsPerAxis);
+	
+	return uv;
+}
+
+//Gets the nth factor of num
+int GetFactor(uint num, int n)
+{
+	uint testNum = 1;
+	int currentFactorIndex = 0;
+	int lastFactor = 1;
+	
+	if (n <= 0 || num <= 1)
+	{
+		return 1;
+	}
+	
+	//increase testNum while it's less than or equal to num
+	while (testNum < num)
+	{
+		//If testNum is a factor of num
+		if (num % testNum == 0)
+		{
+			//Save this testNum in lastFactor
+			lastFactor = testNum;
+			
+			//If the currentIndex == the desired index N then return testNum
+			if (currentFactorIndex == n)
+			{
+				return testNum;
+			}
+			
+			//Every found factor increment the index
+			currentFactorIndex++;
+		}
+	
+		testNum++;
+	}
+	
+	return lastFactor;
+}
+
+float3 GetVertexFromIndex(uint vertexIndex)
+{		
+	int triIndex = vertexIndex / 3;
+	
+	DrawTriangle dTri = _Draw_Triangles_Buffer[triIndex];
+	
+	float3 vertex = dTri.vertex0.positionWS;
+	
+	if (vertexIndex % 3 == 1)
+	{
+		vertex = dTri.vertex1.positionWS;
+	}
+	else if (vertexIndex % 3 == 2)
+	{
+		vertex = dTri.vertex2.positionWS;
+	}
+	
+	return vertex;
+}
+
+[numthreads(numThreads, numThreads, numThreads)]
+void Main(int3 id : SV_DispatchThreadID)
+{
+    // Stop one point before the end because voxel includes neighbouring points
+	if (id.x >= numPointsPerAxis - 1 || id.y >= numPointsPerAxis - 1 || id.z >= numPointsPerAxis - 1)
+	{
+		return;
+	}
+	
+	int increment = GetFactor(numPointsPerAxis - 1, meshSimplificationLevel);
+	
+	if (increment < 0)
+	{
+		increment = 1;
+	}
+	
+	if (id.x % (uint) increment > 0 || id.y % (uint) increment > 0 || id.z % (uint) increment > 0)
+	{
+		return;
+	}
+	
+	// 8 corners of the current cube
+	
+	int3 offsets[8];
+	
+	offsets[0] = int3(id.x, id.y, id.z);
+	offsets[1] = int3(id.x + increment, id.y, id.z);
+	offsets[2] = int3(id.x + increment, id.y, id.z + increment);
+	offsets[3] = int3(id.x, id.y, id.z + increment);
+
+	offsets[4] = int3(id.x, id.y + increment, id.z);
+	offsets[5] = int3(id.x + increment, id.y + increment, id.z);
+	offsets[6] = int3(id.x + increment, id.y + increment, id.z + increment);
+	offsets[7] = int3(id.x, id.y + increment, id.z + increment);
+
+	float densityValues[8];
+	
+	densityValues[0] = _Density_Values_Buffer[indexFromCoord(offsets[0])];
+	densityValues[1] = _Density_Values_Buffer[indexFromCoord(offsets[1])];
+	densityValues[2] = _Density_Values_Buffer[indexFromCoord(offsets[2])];
+	densityValues[3] = _Density_Values_Buffer[indexFromCoord(offsets[3])];
+
+	densityValues[4] = _Density_Values_Buffer[indexFromCoord(offsets[4])];
+	densityValues[5] = _Density_Values_Buffer[indexFromCoord(offsets[5])];
+	densityValues[6] = _Density_Values_Buffer[indexFromCoord(offsets[6])];
+	densityValues[7] = _Density_Values_Buffer[indexFromCoord(offsets[7])];
+	
+	
+	float4 cubeCorners[8];
+	
+	cubeCorners[0] = float4(offsets[0], densityValues[0]);
+	cubeCorners[1] = float4(offsets[1], densityValues[1]);
+	cubeCorners[2] = float4(offsets[2], densityValues[2]);
+	cubeCorners[3] = float4(offsets[3], densityValues[3]);
+	
+	cubeCorners[4] = float4(offsets[4], densityValues[4]);
+	cubeCorners[5] = float4(offsets[5], densityValues[5]);
+	cubeCorners[6] = float4(offsets[6], densityValues[6]);
+	cubeCorners[7] = float4(offsets[7], densityValues[7]);
+
+    // Calculate unique index for each cube configuration.
+    // There are 256 possible values
+    // A value of 0 means cube is entirely inside surface; 255 entirely outside.
+    // The value is used to look up the edge table, which indicates which edges of the cube are cut by the isosurface.
+	int cubeIndex = 0;
+	if (cubeCorners[0].w < isoLevel)
+		cubeIndex |= 1;
+	if (cubeCorners[1].w < isoLevel)
+		cubeIndex |= 2;
+	if (cubeCorners[2].w < isoLevel)
+		cubeIndex |= 4;
+	if (cubeCorners[3].w < isoLevel)
+		cubeIndex |= 8;
+	if (cubeCorners[4].w < isoLevel)
+		cubeIndex |= 16;
+	if (cubeCorners[5].w < isoLevel)
+		cubeIndex |= 32;
+	if (cubeCorners[6].w < isoLevel)
+		cubeIndex |= 64;
+	if (cubeCorners[7].w < isoLevel)
+		cubeIndex |= 128;
+
+    // Create triangles for current cube configuration
+	for (int i = 0; triangulation[cubeIndex][i] != -1; i += 3)
+	{
+        // Get indices of corner points A and B for each of the three edges
+        // of the cube that need to be joined to form the triangle.
+		int a0 = cornerIndexAFromEdge[triangulation[cubeIndex][i]];
+		int b0 = cornerIndexBFromEdge[triangulation[cubeIndex][i]];
+
+		int a1 = cornerIndexAFromEdge[triangulation[cubeIndex][i + 1]];
+		int b1 = cornerIndexBFromEdge[triangulation[cubeIndex][i + 1]];
+
+		int a2 = cornerIndexAFromEdge[triangulation[cubeIndex][i + 2]];
+		int b2 = cornerIndexBFromEdge[triangulation[cubeIndex][i + 2]];
+
+		float3 triPoints[3];
+		DrawTriangle dTri;
+		
+		if (interpolate)
+		{
+			triPoints[0] = interpolateVerts(cubeCorners[a0], cubeCorners[b0]);
+			triPoints[1] = interpolateVerts(cubeCorners[a1], cubeCorners[b1]);
+			triPoints[2] = interpolateVerts(cubeCorners[a2], cubeCorners[b2]);
+		}
+		else
+		{
+			triPoints[0] = cubeCorners[a0].xyz;
+			triPoints[1] = cubeCorners[a1].xyz;
+			triPoints[2] = cubeCorners[a2].xyz;
+		}
+		
+		
+		
+		float4 color = float4(1, 1, 1, 1);
+		
+		dTri = GetDrawTriangle(
+		NewGlobalVertex(triPoints[2], GetUV(triPoints[2]), color),
+		NewGlobalVertex(triPoints[1], GetUV(triPoints[1]), color),
+		NewGlobalVertex(triPoints[0], GetUV(triPoints[0]), color)
+		);
+		
+		AddTriangle(dTri);
+
+	}
+
+}
+
+// Calcuate bounds using vertices that were added to the vertices buffer during Main function
+[numthreads(1, 1, 1)]
+void CalculateBounds(uint3 id : SV_DispatchThreadID)
+{
+	_BoundsBuffer[0] = TransformToWorldSpaceF3(float3(0, 0, 0));
+	_BoundsBuffer[1] = TransformToWorldSpaceF3(float3(numPointsPerAxis - 1, numPointsPerAxis - 1, numPointsPerAxis - 1));
+}
+
+//Calculate the number of triangles each voxel creates
+[numthreads(numThreads, numThreads, numThreads)]
+void CalculateTriangleCountPerVoxel(int3 id : SV_DispatchThreadID)
+{
+    // Stop one point before the end because voxel includes neighbouring points
+	if (id.x >= numPointsPerAxis - 1 || id.y >= numPointsPerAxis - 1 || id.z >= numPointsPerAxis - 1)
+	{
+		return;
+	}
+	
+	int voxelsPerAxis = numPointsPerAxis - 1;	
+	//int index = indexFromCoord(id);
+	int index = id.z * voxelsPerAxis * voxelsPerAxis + id.y * voxelsPerAxis + id.x;
+	
+	if (index >= voxelsPerAxis * voxelsPerAxis * voxelsPerAxis)
+	{
+		return;
+	}
+	
+	_Triangles_Per_Voxel_Buffer[index] = 0;
+	
+	int increment = GetFactor(numPointsPerAxis - 1, meshSimplificationLevel);
+	
+	if (increment < 0)
+	{
+		increment = 1;
+	}
+	
+	if (id.x % (uint) increment > 0 || id.y % (uint) increment > 0 || id.z % (uint) increment > 0)
+	{
+		return;
+	}
+	
+	// 8 corners of the current cube
+	
+	int3 offsets[8];
+	
+	offsets[0] = int3(id.x, id.y, id.z);
+	offsets[1] = int3(id.x + increment, id.y, id.z);
+	offsets[2] = int3(id.x + increment, id.y, id.z + increment);
+	offsets[3] = int3(id.x, id.y, id.z + increment);
+
+	offsets[4] = int3(id.x, id.y + increment, id.z);
+	offsets[5] = int3(id.x + increment, id.y + increment, id.z);
+	offsets[6] = int3(id.x + increment, id.y + increment, id.z + increment);
+	offsets[7] = int3(id.x, id.y + increment, id.z + increment);
+
+	float densityValues[8];
+	
+	densityValues[0] = _Density_Values_Buffer[indexFromCoord(offsets[0])];
+	densityValues[1] = _Density_Values_Buffer[indexFromCoord(offsets[1])];
+	densityValues[2] = _Density_Values_Buffer[indexFromCoord(offsets[2])];
+	densityValues[3] = _Density_Values_Buffer[indexFromCoord(offsets[3])];
+
+	densityValues[4] = _Density_Values_Buffer[indexFromCoord(offsets[4])];
+	densityValues[5] = _Density_Values_Buffer[indexFromCoord(offsets[5])];
+	densityValues[6] = _Density_Values_Buffer[indexFromCoord(offsets[6])];
+	densityValues[7] = _Density_Values_Buffer[indexFromCoord(offsets[7])];
+	
+    // Calculate unique index for each cube configuration.
+    // There are 256 possible values
+    // A value of 0 means cube is entirely inside surface; 255 entirely outside.
+    // The value is used to look up the edge table, which indicates which edges of the cube are cut by the isosurface.
+	int cubeIndex = 0;
+	if (densityValues[0] < isoLevel)
+		cubeIndex |= 1;
+	if (densityValues[1] < isoLevel)
+		cubeIndex |= 2;
+	if (densityValues[2] < isoLevel)
+		cubeIndex |= 4;
+	if (densityValues[3] < isoLevel)
+		cubeIndex |= 8;
+	if (densityValues[4] < isoLevel)
+		cubeIndex |= 16;
+	if (densityValues[5] < isoLevel)
+		cubeIndex |= 32;
+	if (densityValues[6] < isoLevel)
+		cubeIndex |= 64;
+	if (densityValues[7] < isoLevel)
+		cubeIndex |= 128;
+	
+	
+	int count = 0;
+    // Create triangles for current cube configuration
+	for (int i = 0; triangulation[cubeIndex][i] != -1; i += 3)
+	{
+		count++;
+	}
+	
+	_Triangles_Per_Voxel_Buffer[index] = count;
+}
+
+//Sum the number of voxels each triangle creates into one total and calculate indices
+[numthreads(1, 1, 1)]
+void CalculateOverallTriangleCount(uint3 id : SV_DispatchThreadID)
+{
+	_Overall_Triangle_Count_Buffer[0] = 0;
+	
+	int voxelsPerAxis = numPointsPerAxis - 1;
+	int numVoxels = voxelsPerAxis * voxelsPerAxis * voxelsPerAxis;
+	int count = 0;
+	int tPerVoxel = 0;
+	
+	for (uint i = 0; i < numVoxels; i++)
+	{
+		tPerVoxel = _Triangles_Per_Voxel_Buffer[i];
+		if (tPerVoxel > 0)
+		{
+			_Triangle_Index_Buffer[i] = count;
+		}
+		else
+		{
+			_Triangle_Index_Buffer[i] = -1;
+		}		
+				
+		count += tPerVoxel;
+	}
+	
+	_Overall_Triangle_Count_Buffer[0] = count;
+}
+
+[numthreads(numThreads, numThreads, numThreads)]
+void CreateDrawTriangles(int3 id : SV_DispatchThreadID)
+{
+    // Stop one point before the end because voxel includes neighbouring points
+	if (id.x >= numPointsPerAxis - 1 || id.y >= numPointsPerAxis - 1 || id.z >= numPointsPerAxis - 1)
+	{
+		return;
+	}
+	
+	int increment = GetFactor(numPointsPerAxis - 1, meshSimplificationLevel);
+	
+	if (increment < 0)
+	{
+		increment = 1;
+	}
+	
+	if (id.x % (uint) increment > 0 || id.y % (uint) increment > 0 || id.z % (uint) increment > 0)
+	{
+		return;
+	}
+	
+	int voxelsPerAxis = numPointsPerAxis - 1;
+	
+	int index = id.z * voxelsPerAxis * voxelsPerAxis + id.y * voxelsPerAxis + id.x;
+	
+	if (index >= voxelsPerAxis * voxelsPerAxis * voxelsPerAxis)
+	{
+		return;
+	}
+	
+	if (_Triangles_Per_Voxel_Buffer[index] <= 0)
+	{
+		return;
+	}
+	
+	// 8 corners of the current cube
+	
+	int3 offsets[8];
+	
+	offsets[0] = int3(id.x, id.y, id.z);
+	offsets[1] = int3(id.x + increment, id.y, id.z);
+	offsets[2] = int3(id.x + increment, id.y, id.z + increment);
+	offsets[3] = int3(id.x, id.y, id.z + increment);
+
+	offsets[4] = int3(id.x, id.y + increment, id.z);
+	offsets[5] = int3(id.x + increment, id.y + increment, id.z);
+	offsets[6] = int3(id.x + increment, id.y + increment, id.z + increment);
+	offsets[7] = int3(id.x, id.y + increment, id.z + increment);	
+
+	float densityValues[8];
+	
+	densityValues[0] = _Density_Values_Buffer[indexFromCoord(offsets[0])];
+	densityValues[1] = _Density_Values_Buffer[indexFromCoord(offsets[1])];
+	densityValues[2] = _Density_Values_Buffer[indexFromCoord(offsets[2])];
+	densityValues[3] = _Density_Values_Buffer[indexFromCoord(offsets[3])];
+
+	densityValues[4] = _Density_Values_Buffer[indexFromCoord(offsets[4])];
+	densityValues[5] = _Density_Values_Buffer[indexFromCoord(offsets[5])];
+	densityValues[6] = _Density_Values_Buffer[indexFromCoord(offsets[6])];
+	densityValues[7] = _Density_Values_Buffer[indexFromCoord(offsets[7])];
+	
+	
+	float4 cubeCorners[8];
+	
+	cubeCorners[0] = float4(offsets[0], densityValues[0]);
+	cubeCorners[1] = float4(offsets[1], densityValues[1]);
+	cubeCorners[2] = float4(offsets[2], densityValues[2]);
+	cubeCorners[3] = float4(offsets[3], densityValues[3]);
+	
+	cubeCorners[4] = float4(offsets[4], densityValues[4]);
+	cubeCorners[5] = float4(offsets[5], densityValues[5]);
+	cubeCorners[6] = float4(offsets[6], densityValues[6]);
+	cubeCorners[7] = float4(offsets[7], densityValues[7]);
+
+    // Calculate unique index for each cube configuration.
+    // There are 256 possible values
+    // A value of 0 means cube is entirely inside surface; 255 entirely outside.
+    // The value is used to look up the edge table, which indicates which edges of the cube are cut by the isosurface.
+	int cubeIndex = 0;
+	if (cubeCorners[0].w < isoLevel)
+		cubeIndex |= 1;
+	if (cubeCorners[1].w < isoLevel)
+		cubeIndex |= 2;
+	if (cubeCorners[2].w < isoLevel)
+		cubeIndex |= 4;
+	if (cubeCorners[3].w < isoLevel)
+		cubeIndex |= 8;
+	if (cubeCorners[4].w < isoLevel)
+		cubeIndex |= 16;
+	if (cubeCorners[5].w < isoLevel)
+		cubeIndex |= 32;
+	if (cubeCorners[6].w < isoLevel)
+		cubeIndex |= 64;
+	if (cubeCorners[7].w < isoLevel)
+		cubeIndex |= 128;
+	
+	
+	int triIndex = 0;
+	int offsetIndex = _Triangle_Index_Buffer[index];
+	
+	if (offsetIndex == -1)
+	{
+		return;
+	}
+	
+    // Create triangles for current cube configuration
+	for (uint i = 0; triangulation[cubeIndex][i] != -1; i += 3)
+	{
+		triIndex = i / 3;
+        // Get indices of corner points A and B for each of the three edges
+        // of the cube that need to be joined to form the triangle.
+		int a0 = cornerIndexAFromEdge[triangulation[cubeIndex][i]];
+		int b0 = cornerIndexBFromEdge[triangulation[cubeIndex][i]];
+
+		int a1 = cornerIndexAFromEdge[triangulation[cubeIndex][i + 1]];
+		int b1 = cornerIndexBFromEdge[triangulation[cubeIndex][i + 1]];
+
+		int a2 = cornerIndexAFromEdge[triangulation[cubeIndex][i + 2]];
+		int b2 = cornerIndexBFromEdge[triangulation[cubeIndex][i + 2]];
+
+		float3 triPoints[3];
+		DrawTriangle dTri;
+		
+		if (interpolate)
+		{
+			triPoints[0] = interpolateVerts(cubeCorners[a0], cubeCorners[b0]);
+			triPoints[1] = interpolateVerts(cubeCorners[a1], cubeCorners[b1]);
+			triPoints[2] = interpolateVerts(cubeCorners[a2], cubeCorners[b2]);
+		}
+		else
+		{
+			triPoints[0] = cubeCorners[a0].xyz;
+			triPoints[1] = cubeCorners[a1].xyz;
+			triPoints[2] = cubeCorners[a2].xyz;
+		}
+		
+		
+		
+		float4 color = float4(1, 1, 1, 1);
+		
+		dTri = GetDrawTriangle(
+		NewGlobalVertex(triPoints[2], GetUV(triPoints[2]), color),
+		NewGlobalVertex(triPoints[1], GetUV(triPoints[1]), color),
+		NewGlobalVertex(triPoints[0], GetUV(triPoints[0]), color)
+		);			
+		
+		_Draw_Triangles_Buffer[offsetIndex + triIndex] = dTri;
+
+	}
+
+}
+
+[numthreads(numThreads, 1, 1)]
+void CreateMeshDataFromDrawTriangles(uint3 id : SV_DispatchThreadID)
+{	
+	if (id.x >= triangleCount || id.x < 0)
+	{
+		return;
+	}
+	
+	DrawTriangle dTri = _Draw_Triangles_Buffer[id.x];
+	
+	int index0 = id.x * 3;
+	int index1 = index0 + 1;
+	int index2 = index0 + 2;
+	
+	//_Vertices_Buffer[index0] = float3(0, 0, 0);
+	//_Vertices_Buffer[index1] = float3(0, 0, 0);
+	//_Vertices_Buffer[index2] = float3(0, 0, 0);
+	
+	_Vertices_Buffer[index0] = (dTri.vertex0.positionWS);
+	_Vertices_Buffer[index1] = (dTri.vertex1.positionWS);
+	_Vertices_Buffer[index2] = (dTri.vertex2.positionWS);
+	
+	_Triangles_Buffer[index0] = index0;
+	_Triangles_Buffer[index1] = index1;
+	_Triangles_Buffer[index2] = index2;
+}
+
+//Goes through each vertex in each triangle and finds the first other vertex that it is close too
+[numthreads(numThreads, 1, 1)]
+void CalculateFirstCloseIndices(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= triangleCount * 3 || id.x < 0)
+	{
+		return;
+	}	
+	
+	float minDist = 0.01f;
+	
+	uint vertexIndex = id.x;
+	uint otherVertexIndex = id.x;	
+	
+	float3 vertex = GetVertexFromIndex(vertexIndex); // GetVertexFromIndex(vertexIndex);
+	float3 otherVertex;
+	
+	float dist = 0;
+	
+	_First_Close_Index_Buffer[vertexIndex] = vertexIndex;
+	bool found = false;
+	
+	for (otherVertexIndex = 0; otherVertexIndex < triangleCount * 3; otherVertexIndex++)
+	{			
+		if (vertexIndex == otherVertexIndex)
+		{
+			_First_Close_Index_Buffer[vertexIndex] = (int) otherVertexIndex;
+			found = true;
+			break;
+		}
+			
+		otherVertex = GetVertexFromIndex(otherVertexIndex);
+			
+		dist = distance(vertex, otherVertex);
+		
+		if (dist < minDist)
+		{
+			_First_Close_Index_Buffer[vertexIndex] = (int) otherVertexIndex;
+			found = true;
+			break;
+		}
+	}
+}
+
+[numthreads(1, 1, 1)]
+void CalculateUniqueCount(uint3 id : SV_DispatchThreadID)
+{	
+	int vertexCount = triangleCount * 3;
+	
+	int size = triangleCount * 3;
+	
+	uint i = 0;
+	uint j = 0;
+	
+	uint max = 0;	
+	
+	for (i = 0; i < size; i++)
+	{
+		_Unique_Indices_Buffer[i] = -1;
+	}
+
+	int first = 0;
+	
+	int count = 0;
+	
+	for (i = 0; i < vertexCount; i++)
+	{
+		first = _First_Close_Index_Buffer[i];
+		
+		for (j = 0; j < size; j++)
+		{						
+			if (_Unique_Indices_Buffer[j] == -1)
+			{
+				_Unique_Indices_Buffer[j] = first;
+				count++;
+				break;
+			}	
+			
+			if (_Unique_Indices_Buffer[j] == first)
+			{
+				break;
+			}
+		}
+	}	
+	
+	_Unique_Count_Buffer[0] = count;
+	
+}
+
+[numthreads(1, 1, 1)]
+void CalculateUniqueVertices(uint3 id : SV_DispatchThreadID)
+{
+	for (uint i = 0; i < uniqueCount; i++)
+	{
+		if (_Unique_Indices_Buffer[i] == -1)
+		{
+			_Unique_Vertices_Buffer[i] = float3(42, -42, 42);
+			break;
+		}
+		else
+		{
+			_Unique_Vertices_Buffer[i] = GetVertexFromIndex(_Unique_Indices_Buffer[i]);
+		}		
+		
+	}		
+}
+
+[numthreads(numThreads, 1, 1)]
+void CalculateUniqueTriangles(uint3 id : SV_DispatchThreadID)
+{
+	int vertexCount = triangleCount * 3;
+	
+	if (id.x >= vertexCount || id.x < 0 || id.y > 0 || id.z > 0)
+	{
+		return;
+	}		
+	
+	int first = _First_Close_Index_Buffer[id.x];
+	int newIndex = -1;	
+	
+	for (uint i = 0; i < vertexCount; i++)
+	{
+		if (_Unique_Indices_Buffer[i] == -1)
+		{			
+			break;
+		}
+		
+		if (_Unique_Indices_Buffer[i] == first)
+		{
+			newIndex = i;
+			break;
+		}
+	}
+	
+	_Triangles_Buffer[id.x] = newIndex;
+	
+	//int index0 = id.x * 3;
+	//int index1 = index0 + 1;
+	//int index2 = index0 + 2;
+	
+	//int first0 = _First_Close_Index_Buffer[index0];
+	//int first1 = _First_Close_Index_Buffer[index1];
+	//int first2 = _First_Close_Index_Buffer[index2];
+	
+	//int new0 = -1;
+	//int new1 = -1;
+	//int new2 = -1;
+	
+	//int count = 0;
+	
+	//for (uint i = 0; i < triangleCount * 3; i++)
+	//{
+	//	if (_Unique_Indices_Buffer[i] == -1)
+	//	{
+	//		count = i;
+	//		break;
+	//	}
+		
+	//	if (_Unique_Indices_Buffer[i] == first0)
+	//	{
+	//		new0 = i;
+	//	}
+		
+	//	else if (_Unique_Indices_Buffer[i] == first1)
+	//	{
+	//		new1 = i;
+	//	}
+		
+	//	else if (_Unique_Indices_Buffer[i] == first2)
+	//	{
+	//		new2 = i;
+	//	}
+	//}
+	
+	//if (new0 == -1 || new1 == -1 || new2 == -1)
+	//{
+	//	new0 = 0;
+	//	new1 = 1;
+	//	new2 = 2;
+	//}
+	
+	//_Triangles_Buffer[index0] = new0;
+	//_Triangles_Buffer[index1] = new1;
+	//_Triangles_Buffer[index2] = new2;
+}
+
+[numthreads(numThreads, numThreads, numThreads)]
+void SimplifyMesh(int3 id : SV_DispatchThreadID)
+{
+	
+}

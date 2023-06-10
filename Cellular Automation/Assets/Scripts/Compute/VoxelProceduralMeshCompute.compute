@@ -1,0 +1,640 @@
+﻿#pragma kernel Main
+#pragma kernel TriToVertCount
+#pragma kernel CalculateBounds
+
+#if !VOXEL_COMPUTE_HELPERS_INCLUDED
+#include "VoxelHelpers.hlsl"
+#endif
+
+#if !NMG_COMPUTE_HELPERS_INCLUDED
+#include "ProceduralMeshComputeHelpers.hlsl"
+#endif
+
+// This describes a vertex in local terms
+struct LocalVertex
+{
+	float3 positionOS; // position in object space
+	float2 uv; // UV
+};
+// This describes a vertex on the generated mesh
+struct GlobalVertex
+{
+	float3 positionWS; // position in world space
+	float2 uv; // UV
+};
+// We have to insert three draw vertices at once so the triangle stays connected
+// in the graphics shader. This structure does that
+struct DrawTriangle
+{
+	float3 normalWS; // normal in world space. All points share this normal
+	GlobalVertex vertices[3];
+};
+
+// Compute buffers
+AppendStructuredBuffer<DrawTriangle> _DrawTriangles;
+
+float3 _Scale;
+float4x4 _LocalToWorld;
+
+RWStructuredBuffer<float3> _BoundsBuffer;
+
+struct IndirectArgs
+{
+	uint numVerticesPerInstance;
+	uint numInstances;
+	uint startVertexIndex;
+	uint startInstanceIndex;
+};
+RWStructuredBuffer<IndirectArgs> _IndirectArgsBuffer;
+
+// This Creates a new local vertex struct using the inputs
+LocalVertex NewLocalVertex(float3 position, float2 uv)
+{
+	LocalVertex l;
+	l.positionOS = position;
+	l.uv = uv;
+	return l;
+}
+
+// This converts a Local vertex into a Global vertex by converting from OS to WS
+float3 TransformToWorldSpaceF3(float3 localPosition)
+{
+	float3 globalPosition;
+	globalPosition = mul(_LocalToWorld, float4(localPosition, 1)).xyz;
+	return globalPosition;
+}
+
+// This converts a Local vertex into a Global vertex by converting from OS to WS
+GlobalVertex TransformToWorldSpace(LocalVertex v)
+{
+	GlobalVertex o;
+	o.positionWS = TransformToWorldSpaceF3(v.positionOS);
+	o.uv = v.uv;
+	return o;
+}
+
+// This Creates a new local vertex struct using the inputs
+GlobalVertex NewGlobalVertex(float3 position, float2 uv)
+{
+	return TransformToWorldSpace(NewLocalVertex(position, uv));
+}
+
+DrawTriangle GetDrawTriangle(GlobalVertex a, GlobalVertex b, GlobalVertex c)
+{
+	// Since we extrude the center face, the normal must be recalculated
+	float3 normalWS = GetNormalFromTriangle(a.positionWS, b.positionWS, c.positionWS);
+
+    // Create a draw triangle from three points
+	DrawTriangle tri;
+	tri.normalWS = normalWS;
+	tri.vertices[0] = a;
+	tri.vertices[1] = b;
+	tri.vertices[2] = c;
+	
+	return tri;
+}
+
+void AddTriangle(DrawTriangle tri)
+{
+	_DrawTriangles.Append(tri);
+}
+
+void AddTriangle(GlobalVertex a, GlobalVertex b, GlobalVertex c)
+{
+	AddTriangle(GetDrawTriangle(a, b, c));
+
+}
+
+void AddFaceToTriangles(VoxelFace face)
+{
+	GlobalVertex points[6];
+	
+	points[0].positionWS = mul(_LocalToWorld, float4(face.vertex0, 1)).xyz;
+	points[0].uv = face.uv0;
+	
+	points[1].positionWS = mul(_LocalToWorld, float4(face.vertex1, 1)).xyz;
+	points[1].uv = face.uv1;
+	
+	points[2].positionWS = mul(_LocalToWorld, float4(face.vertex2, 1)).xyz;
+	points[2].uv = face.uv2;
+		
+	points[3].positionWS = mul(_LocalToWorld, float4(face.vertex0, 1)).xyz;
+	points[3].uv = face.uv0;
+	
+	points[4].positionWS = mul(_LocalToWorld, float4(face.vertex2, 1)).xyz;
+	points[4].uv = face.uv2;
+	
+	points[5].positionWS = mul(_LocalToWorld, float4(face.vertex3, 1)).xyz;
+	points[5].uv = face.uv3;
+	
+	// Create a draw triangle from three points
+	DrawTriangle tri;
+	tri.normalWS = face.normal;
+	tri.vertices[0] = points[0];
+	tri.vertices[1] = points[1];
+	tri.vertices[2] = points[2];
+
+    // Add the output tri to the output buffer
+	_DrawTriangles.Append(tri);
+	
+	tri.vertices[0] = points[3];
+	tri.vertices[1] = points[4];
+	tri.vertices[2] = points[5];
+	
+	_DrawTriangles.Append(tri);
+}
+
+void AddCubeToDrawBuffer(float3 center, float3 size)
+{
+	float3 centeredOffset = float3(-0.5f * size.x, -0.5f * size.y, -0.5f * size.z) + center;
+	
+	float3 corners[8];
+	corners[0] = float3(0, 0, 0) + centeredOffset;
+	corners[1] = float3(0, 0, size.z) + centeredOffset;
+	corners[2] = float3(size.x, 0, size.z) + centeredOffset;
+	corners[3] = float3(size.x, 0, 0) + centeredOffset;
+
+	corners[4] = float3(0, size.y, 0) + centeredOffset;
+	corners[5] = float3(0, size.y, size.z) + centeredOffset;
+	corners[6] = float3(size.x, size.y, size.z) + centeredOffset;
+	corners[7] = float3(size.x, size.y, 0) + centeredOffset;
+	
+	GlobalVertex inputs[24]; //4 corners and 6 sides
+	
+	//Top
+	inputs[0] = NewGlobalVertex(corners[4], float2(0, 0));
+	inputs[1] = NewGlobalVertex(corners[5], float2(0, 1));
+	inputs[2] = NewGlobalVertex(corners[6], float2(1, 1));
+	inputs[3] = NewGlobalVertex(corners[7], float2(1, 0));
+	
+	//Bottom
+	inputs[4] = NewGlobalVertex(corners[3], float2(0, 0));
+	inputs[5] = NewGlobalVertex(corners[2], float2(0, 1));
+	inputs[6] = NewGlobalVertex(corners[1], float2(1, 1));
+	inputs[7] = NewGlobalVertex(corners[0], float2(1, 0));
+	
+	//Left
+	inputs[8] = NewGlobalVertex(corners[1], float2(0, 0));
+	inputs[9] = NewGlobalVertex(corners[5], float2(0, 1));
+	inputs[10] = NewGlobalVertex(corners[4], float2(1, 1));
+	inputs[11] = NewGlobalVertex(corners[0], float2(1, 0));
+	
+	//Right
+	inputs[12] = NewGlobalVertex(corners[3], float2(0, 0));
+	inputs[13] = NewGlobalVertex(corners[7], float2(0, 1));
+	inputs[14] = NewGlobalVertex(corners[6], float2(1, 1));
+	inputs[15] = NewGlobalVertex(corners[2], float2(1, 0));
+	
+	//Forawrd
+	inputs[16] = NewGlobalVertex(corners[2], float2(0, 0));
+	inputs[17] = NewGlobalVertex(corners[6], float2(0, 1));
+	inputs[18] = NewGlobalVertex(corners[5], float2(1, 1));
+	inputs[19] = NewGlobalVertex(corners[1], float2(1, 0));
+	
+	//Back
+	inputs[20] = NewGlobalVertex(corners[0], float2(0, 0));
+	inputs[21] = NewGlobalVertex(corners[4], float2(0, 1));
+	inputs[22] = NewGlobalVertex(corners[7], float2(1, 1));
+	inputs[23] = NewGlobalVertex(corners[3], float2(1, 0));
+	
+
+	for (int i = 0; i < 6; i++)
+	{
+		AddTriangle(inputs[i * 4], inputs[i * 4 + 1], inputs[i * 4 + 2]);
+		AddTriangle(inputs[i * 4], inputs[i * 4 + 2], inputs[i * 4 + 3]);
+	}
+}
+
+void UpdateBounds(DrawTriangle tri)
+{
+	for (int i = 0; i < 3; i++)
+	{
+		GlobalVertex vertex = tri.vertices[i];
+		
+		float minX = _BoundsBuffer[0].x, minY = _BoundsBuffer[0].y, minZ = _BoundsBuffer[0].z;
+		
+		if (vertex.positionWS.x < minX)
+		{
+			minX = vertex.positionWS.x;
+		}
+		
+		if (vertex.positionWS.y < minY)
+		{
+			minY = vertex.positionWS.y;
+		}
+		
+		if (vertex.positionWS.z < minZ)
+		{
+			minZ = vertex.positionWS.z;
+		}
+		
+		_BoundsBuffer[0] = float3(minX, minY, minZ);
+		
+		float maxX = _BoundsBuffer[1].x, maxY = _BoundsBuffer[1].y, maxZ = _BoundsBuffer[1].z;
+		
+		if (vertex.positionWS.x > maxX)
+		{
+			maxX = vertex.positionWS.x;
+		}
+		
+		if (vertex.positionWS.y > maxY)
+		{
+			maxY = vertex.positionWS.y;
+		}
+		
+		if (vertex.positionWS.z > maxZ)
+		{
+			maxZ = vertex.positionWS.z;
+		}
+		
+		_BoundsBuffer[1] = float3(maxX, maxY, maxZ);
+	}
+
+}
+
+[numthreads(128, 1, 1)]
+void Main(uint3 coordinate : SV_DispatchThreadID)
+{
+	uint sliceIndex = coordinate.x; // 0 to Max(XWidth, YWidth, ZWidth) - 1
+	uint sideIndex = coordinate.y; //0 to 5
+	
+	uint numberOfSlicesOnThisAxis;
+	
+	if (sideIndex < 2)
+	{
+		numberOfSlicesOnThisAxis = YWidth;
+	}
+	else if (sideIndex < 2)
+	{
+		numberOfSlicesOnThisAxis = XWidth;
+	}
+	else
+	{
+		numberOfSlicesOnThisAxis = ZWidth;
+	}
+	
+	
+	if (sliceIndex.x >= numberOfSlicesOnThisAxis || sideIndex >= 6 || coordinate.z > 1)
+	{
+		return;
+	}
+		
+	int x, y, z;
+	int x1, y1, z1;
+	int xOffset, yOffset, zOffset;
+	
+	uint checkSize;
+	
+	SliceStartEnd sliceInfo;
+	VoxelFace face;
+	
+	sliceInfo.sliceIndex = sliceIndex;
+	sliceInfo.sideIndex = sideIndex;
+	
+	sliceInfo.start = int2(-1, -1);
+	sliceInfo.end = int2(-1, -1);
+	
+	int3 currentVoxelPos;
+		
+	int y2DLength = ZWidth;
+	int x2DLength = XWidth;
+	
+	if (sideIndex < 2)
+	{
+		y2DLength = ZWidth;
+		x2DLength = XWidth;
+	}
+	else if (sideIndex < 4)
+	{
+		y2DLength = YWidth;
+		x2DLength = ZWidth;
+	}
+	else
+	{
+		y2DLength = YWidth;
+		x2DLength = XWidth;
+	}
+	
+	for (int i = 0; i < 256; i++)
+	{
+		visited[i] = false;
+	}
+	
+	int visitedIndex = 0;
+	int x2D, y2D;
+	
+	for (y2D = 0; y2D < y2DLength; y2D++)
+	{
+		for (x2D = 0; x2D < x2DLength; x2D++)
+		{
+			visitedIndex = x2D + y2D * x2DLength;
+			
+			if (sideIndex < 2)
+			{
+				currentVoxelPos = int3(x2D, sliceIndex, y2D);
+			}
+			else if (sideIndex < 4)
+			{
+				currentVoxelPos = int3(sliceIndex, y2D, x2D);
+			}
+			else
+			{
+				currentVoxelPos = int3(x2D, y2D, sliceIndex);
+			}
+			
+			
+			if (!Visited(visitedIndex) && FaceVisible(currentVoxelPos, sideIndex))
+			{
+				sliceInfo.start = int2(x2D, y2D);
+				sliceInfo.end = int2(x2D, y2D);
+
+					
+				bool lCheckWorked = false;
+				bool upWorked = false;
+					
+				for (checkSize = 1; checkSize <= x2DLength; checkSize++)
+				{
+					if (LCheck(currentVoxelPos, checkSize, sideIndex))
+					{
+						sliceInfo.end = int2(x2D + checkSize, y2D + checkSize);
+						lCheckWorked = true;
+					}
+					else
+					{
+						break;
+					}
+				}
+					
+				if (lCheckWorked)
+				{
+					int2 e = sliceInfo.end;
+					//currentVoxelPos = int3(sliceInfo.end.x, y, sliceInfo.end.y);
+					int length = (int) (sliceInfo.end.x - sliceInfo.start.x);
+					
+					if (sideIndex < 2)
+					{
+						currentVoxelPos = int3(sliceInfo.end.x, sliceIndex, sliceInfo.end.y);
+					}
+					else if (sideIndex < 4)
+					{
+						currentVoxelPos = int3(sliceIndex, sliceInfo.end.y, sliceInfo.end.x);
+					}
+					else
+					{
+						currentVoxelPos = int3(sliceInfo.end.x, sliceInfo.end.y, sliceIndex);
+					}
+						
+					for (checkSize = 1; checkSize <= y2DLength; checkSize++)
+					{
+						if (UpCheck(currentVoxelPos, checkSize, length, sideIndex))
+						{
+							sliceInfo.end = int2(e.x, e.y + checkSize);
+							upWorked = true;
+						}
+						else
+						{
+							break;
+						}
+					}
+				}
+					
+				if (lCheckWorked && !upWorked)
+				{
+					int2 e = sliceInfo.end;
+					//currentVoxelPos = int3(sliceInfo.end.x, y, sliceInfo.end.y);
+					int length = (int) (sliceInfo.end.y - sliceInfo.start.y);
+					
+					if (sideIndex < 2)
+					{
+						currentVoxelPos = int3(sliceInfo.end.x, sliceIndex, sliceInfo.end.y);
+					}
+					else if (sideIndex < 4)
+					{
+						currentVoxelPos = int3(sliceIndex, sliceInfo.end.y, sliceInfo.end.x);
+					}
+					else
+					{
+						currentVoxelPos = int3(sliceInfo.end.x, sliceInfo.end.y, sliceIndex);
+					}
+						
+					for (checkSize = 1; checkSize <= x2DLength; checkSize++)
+					{
+						if (RightCheck(currentVoxelPos, checkSize, length, sideIndex))
+						{
+							sliceInfo.end = int2(e.x + checkSize, e.y);
+						}
+						else
+						{
+							break;
+						}
+					}
+				}
+					
+				if (lCheckWorked)
+				{
+					//Start_End_Buffer.Append(sliceInfo);
+						
+					int3 start3 = int3(sliceInfo.start.x, sliceInfo.sliceIndex, sliceInfo.start.y);
+					int3 end3 = int3(sliceInfo.end.x, sliceInfo.sliceIndex, sliceInfo.end.y);
+					
+					if (sideIndex < 2)
+					{
+						start3 = int3(sliceInfo.start.x, sliceInfo.sliceIndex, sliceInfo.start.y);
+						end3 = int3(sliceInfo.end.x, sliceInfo.sliceIndex, sliceInfo.end.y);
+					}
+					else if (sideIndex < 4)
+					{
+						start3 = int3(sliceInfo.sliceIndex, sliceInfo.start.y, sliceInfo.start.x);
+						end3 = int3(sliceInfo.sliceIndex, sliceInfo.end.y, sliceInfo.end.x);
+					}
+					else
+					{
+						start3 = int3(sliceInfo.start.x, sliceInfo.start.y, sliceInfo.sliceIndex);
+						end3 = int3(sliceInfo.end.x, sliceInfo.end.y, sliceInfo.sliceIndex);
+					}
+					
+					GetVoxelFaceStartEnd(start3, end3, sideIndex, face);
+					//VoxelFace_Buffer.Append(face);
+					AddFaceToTriangles(face);
+					
+					for (x1 = sliceInfo.start.x; x1 <= sliceInfo.end.x; x1++)
+					{
+						for (y1 = sliceInfo.start.y; y1 <= sliceInfo.end.y; y1++)
+						{
+							visited[x1 + y1 * x2DLength] = 1.0f;
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	for (y2D = 0; y2D < y2DLength; y2D++)
+	{
+		for (x2D = 0; x2D < x2DLength; x2D++)
+		{
+			visitedIndex = x2D + y2D * x2DLength;
+			
+			if (sideIndex < 2)
+			{
+				currentVoxelPos = int3(x2D, sliceIndex, y2D);
+			}
+			else if (sideIndex < 4)
+			{
+				currentVoxelPos = int3(sliceIndex, y2D, x2D);
+			}
+			else
+			{
+				currentVoxelPos = int3(x2D, y2D, sliceIndex);
+			}
+			
+			if (!Visited(visitedIndex) && FaceVisible(currentVoxelPos, sideIndex))
+			{
+				sliceInfo.start = float2(x2D, y2D);
+				sliceInfo.end = float2(x2D, y2D);
+					
+				int3 cPos;
+				bool verticalWorked = false;
+				for (yOffset = 1; yOffset < y2DLength; yOffset++)
+				{
+					if (sideIndex < 2)
+					{
+						cPos = int3(currentVoxelPos.x, currentVoxelPos.y, currentVoxelPos.z + yOffset);
+						visitedIndex = cPos.x + cPos.z * x2DLength;
+					}
+					else if (sideIndex < 4)
+					{
+						cPos = int3(currentVoxelPos.x, currentVoxelPos.y + yOffset, currentVoxelPos.z);
+						visitedIndex = cPos.z + cPos.y * x2DLength;
+					}
+					else
+					{
+						cPos = int3(currentVoxelPos.x, currentVoxelPos.y + yOffset, currentVoxelPos.z);
+						visitedIndex = cPos.x + cPos.y * x2DLength;
+					}
+								
+					bool inBounds = cPos.x < XWidth && cPos.y < YWidth && cPos.z < ZWidth;
+							
+					if (inBounds && !Visited(visitedIndex) && FaceVisible(cPos, sideIndex) && HasSameTextureInfo(currentVoxelPos, cPos, sideIndex))
+					{
+						if (sideIndex < 2)
+						{
+							sliceInfo.end = float2(cPos.x, cPos.z);
+						}
+						else if (sideIndex < 4)
+						{
+							sliceInfo.end = float2(cPos.z, cPos.y);
+						}
+						else
+						{
+							sliceInfo.end = float2(cPos.x, cPos.y);
+						}
+						
+						verticalWorked = true;
+					}
+					else
+					{
+						break;
+					}
+							
+				}
+					
+				if (!verticalWorked)
+				{
+					for (xOffset = 1; xOffset < XWidth; xOffset++)
+					{
+						if (sideIndex < 2)
+						{
+							cPos = int3(currentVoxelPos.x + xOffset, currentVoxelPos.y, currentVoxelPos.z);
+							visitedIndex = cPos.x + cPos.z * x2DLength;
+						}
+						else if (sideIndex < 4)
+						{
+							cPos = int3(currentVoxelPos.x, currentVoxelPos.y, currentVoxelPos.z + xOffset);
+							visitedIndex = cPos.z + cPos.y * x2DLength;
+						}
+						else
+						{
+							cPos = int3(currentVoxelPos.x + xOffset, currentVoxelPos.y, currentVoxelPos.z);
+							visitedIndex = cPos.x + cPos.y * x2DLength;
+						}
+							
+						bool inBounds = cPos.x < XWidth && cPos.y < YWidth && cPos.z < ZWidth;
+						
+						if (inBounds && !Visited(visitedIndex) && FaceVisible(cPos, sideIndex) && HasSameTextureInfo(currentVoxelPos, cPos, sideIndex))
+						{
+							if (sideIndex < 2)
+							{
+								sliceInfo.end = float2(cPos.x, cPos.z);
+							}
+							else if (sideIndex < 4)
+							{
+								sliceInfo.end = float2(cPos.z, cPos.y);
+							}
+							else
+							{
+								sliceInfo.end = float2(cPos.x, cPos.y);
+							}
+						}
+						else
+						{
+							break;
+						}
+							
+					}
+				}
+					
+				//Start_End_Buffer.Append(sliceInfo);
+						
+				int3 start3 = int3(sliceInfo.start.x, sliceInfo.sliceIndex, sliceInfo.start.y);
+				int3 end3 = int3(sliceInfo.end.x, sliceInfo.sliceIndex, sliceInfo.end.y);
+					
+				if (sideIndex < 2)
+				{
+					start3 = int3(sliceInfo.start.x, sliceInfo.sliceIndex, sliceInfo.start.y);
+					end3 = int3(sliceInfo.end.x, sliceInfo.sliceIndex, sliceInfo.end.y);
+				}
+				else if (sideIndex < 4)
+				{
+					start3 = int3(sliceInfo.sliceIndex, sliceInfo.start.y, sliceInfo.start.x);
+					end3 = int3(sliceInfo.sliceIndex, sliceInfo.end.y, sliceInfo.end.x);
+				}
+				else
+				{
+					start3 = int3(sliceInfo.start.x, sliceInfo.start.y, sliceInfo.sliceIndex);
+					end3 = int3(sliceInfo.end.x, sliceInfo.end.y, sliceInfo.sliceIndex);
+				}
+					
+				GetVoxelFaceStartEnd(start3, end3, sideIndex, face);
+				//VoxelFace_Buffer.Append(face);
+				AddFaceToTriangles(face);
+						
+				for (x1 = sliceInfo.start.x; x1 <= sliceInfo.end.x; x1++)
+				{
+					for (y1 = sliceInfo.start.y; y1 <= sliceInfo.end.y; y1++)
+					{
+						visited[x1 + y1 * x2DLength] = 1.0f;
+					}
+				}
+
+			}
+				
+			visited[x2D + y2D * x2DLength] = 1.0f;
+		}
+	}
+}
+
+// Multiply the number of vertices by three to convert from triangles
+[numthreads(1, 1, 1)]
+void TriToVertCount(uint3 id : SV_DispatchThreadID)
+{
+	_IndirectArgsBuffer[0].numVerticesPerInstance *= 3;
+}
+
+// Calcuate bounds using vertices that were added to the vertices buffer during Main function
+[numthreads(1, 1, 1)]
+void CalculateBounds(uint3 id : SV_DispatchThreadID)
+{
+	_BoundsBuffer[0] = TransformToWorldSpaceF3(float3(0, 0, 0) - _Scale / 2.0f);
+	_BoundsBuffer[1] = TransformToWorldSpaceF3(float3(10, _Scale.y, _Scale.z) - _Scale / 2.0f);
+}

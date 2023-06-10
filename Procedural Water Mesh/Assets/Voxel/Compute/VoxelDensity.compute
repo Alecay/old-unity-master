@@ -1,0 +1,234 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Main
+
+#include "NOISE_SIMPLEX_FUNC.hlsl"
+
+uint Seed = 42;
+uint Octaves = 5;
+
+float Scale = 100.0f;
+
+float Persistance = 0.5f;
+float Lacunarity = 2.0f;
+
+float3 Offset = float3(0, 0, 0);
+
+uint ChunkSize = 16;
+
+float3 ChunkOffset = float3(0, 0, 0);
+
+float HeightMultiplier = 16.0f;
+
+int HeightOffset = 1;
+
+uint WorldHeight = 256;
+
+RWStructuredBuffer<float> Density_Values_Buffer;
+RWStructuredBuffer<float> Density_Values_Buffer_1;
+RWStructuredBuffer<float> Density_Values_Buffer_2;
+
+float Radius = 100.0f;
+
+float inverse_lerp(float a, float b, float l)
+{
+	return clamp((l - a) / (b - a), 0, 1);
+}
+
+float Noise3D(float x, float y, float z)
+{
+	float minScale = 1.0f / 10000.0f;
+	
+	if (Scale < minScale)
+	{
+		Scale = minScale;
+	}
+	
+	float amplitude = 1;
+	float frequency = 1;
+	float noiseHeight = 0;
+	
+	float sampleX = 0;
+	float sampleY = 0;
+	float sampleZ = 0;
+	float perlinValue = 0;
+	
+	float halfXWidth = ChunkSize / 2.0f;
+	float halfYWidth = ChunkSize / 2.0f;
+	float halfZWidth = ChunkSize / 2.0f;
+	
+	bool centered = false;
+	
+	if (!centered)
+	{
+		halfXWidth = 0;
+		halfYWidth = 0;
+		halfZWidth = 0;
+	}
+	
+	float maxPerlinValue = 0;
+	
+	for (uint i = 0; i < Octaves; i++)
+	{
+		maxPerlinValue += amplitude;
+		
+		amplitude *= Persistance;
+	}
+	
+	amplitude = 1;
+	
+	float seedX = lerp(-1000, 1000, (snoise(float2(Seed, Seed + 1)) + 1) / 2.0f);
+	float seedY = lerp(-1000, 1000, (snoise(float2(Seed + 1, Seed)) + 1) / 2.0f);
+	float seedZ = lerp(-1000, 1000, (snoise(float2(Seed + 1, Seed + 1)) + 1) / 2.0f);
+	
+	for (uint j = 0; j < Octaves; j++)
+	{
+		sampleX = ((x - halfXWidth + Offset.x + ChunkOffset.x * (float) ChunkSize) / Scale * frequency) + seedX + (j + 1);
+		sampleY = ((y - halfYWidth + Offset.y + ChunkOffset.y * (float) ChunkSize) / Scale * frequency) + seedY + (j + 1);
+		sampleZ = ((z - halfZWidth + Offset.z + ChunkOffset.z * (float) ChunkSize) / Scale * frequency) + seedZ + (j + 1);
+		
+		perlinValue = snoise(float3(sampleX, sampleY, sampleZ));
+		//perlinValue = (perlinValue + 1) / 2.0f;
+
+		noiseHeight += perlinValue * amplitude;
+		
+		amplitude *= Persistance;
+		frequency *= Lacunarity;
+
+	}
+	
+	return noiseHeight;
+}
+
+float Noise3D(float x, float y, float z, int seed, float chunkSize, float scale, float octaves, float persistance, float lacunarity)
+{
+	float minScale = 1.0f / 10000.0f;
+	
+	if (scale < minScale)
+	{
+		scale = minScale;
+	}
+	
+	float amplitude = 1;
+	float frequency = 1;
+	float noiseHeight = 0;
+	
+	float sampleX = 0;
+	float sampleY = 0;
+	float sampleZ = 0;
+	float perlinValue = 0;
+	
+	float halfXWidth = chunkSize / 2.0f;
+	float halfYWidth = chunkSize / 2.0f;
+	float halfZWidth = chunkSize / 2.0f;
+	
+	bool centered = false;
+	
+	if (!centered)
+	{
+		halfXWidth = 0;
+		halfYWidth = 0;
+		halfZWidth = 0;
+	}
+	
+	float maxPerlinValue = 0;
+	
+	for (uint i = 0; i < octaves; i++)
+	{
+		maxPerlinValue += amplitude;
+		
+		amplitude *= persistance;
+	}
+	
+	amplitude = 1;
+	
+	float seedX = lerp(-1000, 1000, (snoise(float2(seed, seed + 1)) + 1) / 2.0f);
+	float seedY = lerp(-1000, 1000, (snoise(float2(seed + 1, seed)) + 1) / 2.0f);
+	float seedZ = lerp(-1000, 1000, (snoise(float2(seed + 1, seed + 1)) + 1) / 2.0f);
+	
+	for (uint j = 0; j < octaves; j++)
+	{
+		sampleX = ((x - halfXWidth + Offset.x + ChunkOffset.x * (float) chunkSize) / scale * frequency) + seedX + (j + 1);
+		sampleY = ((y - halfYWidth + Offset.y + ChunkOffset.y * (float) chunkSize) / scale * frequency) + seedY + (j + 1);
+		sampleZ = ((z - halfZWidth + Offset.z + ChunkOffset.z * (float) chunkSize) / scale * frequency) + seedZ + (j + 1);
+		
+		perlinValue = snoise(float3(sampleX, sampleY, sampleZ));
+		//perlinValue = (perlinValue + 1) / 2.0f;
+
+		noiseHeight += perlinValue * amplitude;
+		
+		amplitude *= persistance;
+		frequency *= lacunarity;
+
+	}
+	
+	return noiseHeight;
+}
+
+[numthreads(8, 8, 1)]
+void Main(uint3 coordinate : SV_DispatchThreadID)
+{
+	if (coordinate.x >= ChunkSize || coordinate.y >= WorldHeight || coordinate.z >= ChunkSize)
+	{
+		return;
+	}
+	
+	int index = coordinate.x + coordinate.z * ChunkSize + coordinate.y * ChunkSize * ChunkSize;
+
+	float nValue = Noise3D(coordinate.x, coordinate.y, coordinate.z);
+	float density;
+	
+	float3 center = float3(0, 0, 0);
+	float3 point3D = float3(coordinate.x, coordinate.y, coordinate.z) + Offset;
+	float dist = distance(center, point3D);
+	
+	float height = clamp(nValue, -1, 1) * HeightMultiplier;
+	density = 1 - (dist / (Radius + height));
+	
+	density = clamp(density, -1, 1) * -1;
+	
+	float actualX = (float) coordinate.x + Offset.x;
+	float actualY = (float) coordinate.y + Offset.y;
+	
+	dist = actualY - HeightOffset;
+	
+	density = clamp(nValue - (dist / HeightMultiplier), -1, 1);
+	
+	float squashingFactor = Noise3D(coordinate.x, 0, coordinate.z, Seed + 2, ChunkSize, Scale / 4.0f, 3, 0.5f, 1.2f);
+	squashingFactor = (squashingFactor + 1) / 2.0f;
+	squashingFactor = clamp(squashingFactor, 0.0f, 1.0f);
+	
+	float heightOffset = Noise3D(coordinate.x, 0, coordinate.z, Seed - 2, ChunkSize, Scale / 4.0f, 3, 0.5f, 1.2f);
+	//heightOffset = (heightOffset + 1) / 2.0f;
+	heightOffset = clamp(heightOffset, -1.0f, 1.0f);
+	
+	if (actualY < HeightOffset)
+	{		
+		//density = clamp(nValue - (dist / (HeightMultiplier * squashingFactor)), -1, 1);
+		density = clamp(nValue - (dist / ((HeightMultiplier - heightOffset * (WorldHeight / 8)) * 0.5f * squashingFactor)), -1, 1);
+		
+		//nValue = Noise3D(coordinate.x, coordinate.y, coordinate.z, Seed + 1, ChunkSize, Scale / 5.0f, Octaves, Persistance, Lacunarity);	
+		
+		//nValue =	   Noise3D(coordinate.x, coordinate.y, coordinate.z, Seed + 2, ChunkSize, Scale / 4.0f, 3, 0.5f, 1.2f);
+		//float sValue = Noise3D(coordinate.x, coordinate.y, coordinate.z, Seed + 3, ChunkSize, Scale / 5.0f, 3, 0.5f, 1.2f);
+		//float hValue = Noise3D(coordinate.x, coordinate.y, coordinate.z, Seed + 4, ChunkSize, Scale / 6.0f, 3, 0.5f, 1.2f);
+		//float radius = 0.1f;	
+		
+		////Set caves
+		//if (abs(nValue) < radius && abs(sValue) < radius)//  && abs(hValue) < radius)
+		//{
+		//	density = 0;
+		//}
+	}
+	else
+	{
+		density = clamp(nValue - (dist / (HeightMultiplier * 2.0f * squashingFactor)), -1, 1);		
+	}
+
+	
+	if (actualY == 0)
+	{
+		density = 1.0f;
+	}
+	
+	Density_Values_Buffer[index] = density;// * -1;
+}

@@ -1,0 +1,242 @@
+﻿#pragma kernel Main
+#pragma kernel TriToVertCount
+#pragma kernel CalculateBounds
+
+#if !PROCEDURAL_MESH_COMPUTE_HELPERS_INCLUDED
+
+#include "ProceduralMeshComputeHelpers.hlsl"
+
+#endif
+
+// This describes a vertex in local terms
+struct LocalVertex
+{
+	float3 positionOS; // position in object space
+	float2 uv; // UV
+};
+// This describes a vertex on the generated mesh
+struct GlobalVertex
+{
+	float3 positionWS; // position in world space
+	float2 uv; // UV
+};
+// We have to insert three draw vertices at once so the triangle stays connected
+// in the graphics shader. This structure does that
+struct DrawTriangle
+{
+	float3 normalWS; // normal in world space. All points share this normal
+	GlobalVertex vertices[3];
+};
+
+// Compute buffers
+AppendStructuredBuffer<DrawTriangle> _DrawTriangles;
+
+float3 _Scale;
+float4x4 _LocalToWorld;
+
+RWStructuredBuffer<float3> _BoundsBuffer;
+
+struct IndirectArgs
+{
+	uint numVerticesPerInstance;
+	uint numInstances;
+	uint startVertexIndex;
+	uint startInstanceIndex;
+};
+RWStructuredBuffer<IndirectArgs> _IndirectArgsBuffer;
+
+// This Creates a new local vertex struct using the inputs
+LocalVertex NewLocalVertex(float3 position, float2 uv)
+{
+	LocalVertex l;
+	l.positionOS = position;
+	l.uv = uv;
+	return l;
+}
+
+// This converts a Local vertex into a Global vertex by converting from OS to WS
+float3 TransformToWorldSpaceF3(float3 localPosition)
+{
+	float3 globalPosition;
+	globalPosition = mul(_LocalToWorld, float4(localPosition, 1)).xyz;
+	return globalPosition;
+}
+
+// This converts a Local vertex into a Global vertex by converting from OS to WS
+GlobalVertex TransformToWorldSpace(LocalVertex v)
+{
+	GlobalVertex o;
+	o.positionWS = TransformToWorldSpaceF3(v.positionOS);	
+	o.uv = v.uv;
+	return o;
+}
+
+// This Creates a new local vertex struct using the inputs
+GlobalVertex NewGlobalVertex(float3 position, float2 uv)
+{
+	return TransformToWorldSpace(NewLocalVertex(position, uv));
+}
+
+DrawTriangle GetDrawTriangle(GlobalVertex a, GlobalVertex b, GlobalVertex c)
+{
+	// Since we extrude the center face, the normal must be recalculated
+	float3 normalWS = GetNormalFromTriangle(a.positionWS, b.positionWS, c.positionWS);
+
+    // Create a draw triangle from three points
+	DrawTriangle tri;
+	tri.normalWS = normalWS;
+	tri.vertices[0] = a;
+	tri.vertices[1] = b;
+	tri.vertices[2] = c;
+	
+	return tri;
+}
+
+void AddTriangle(DrawTriangle tri)
+{
+	_DrawTriangles.Append(tri);
+}
+
+void AddTriangle(GlobalVertex a, GlobalVertex b, GlobalVertex c)
+{	
+	AddTriangle(GetDrawTriangle(a, b, c));
+
+}
+
+void AddCubeToDrawBuffer(float3 center, float3 size)
+{
+	float3 centeredOffset = float3(-0.5f * size.x, -0.5f * size.y, -0.5f * size.z) + center;
+	
+	float3 corners[8];
+	corners[0] = float3(0, 0, 0) + centeredOffset;
+	corners[1] = float3(0, 0, size.z) + centeredOffset;
+	corners[2] = float3(size.x, 0, size.z) + centeredOffset;
+	corners[3] = float3(size.x, 0, 0) + centeredOffset;
+
+	corners[4] = float3(0, size.y, 0) + centeredOffset;
+	corners[5] = float3(0, size.y, size.z) + centeredOffset;
+	corners[6] = float3(size.x, size.y, size.z) + centeredOffset;
+	corners[7] = float3(size.x, size.y, 0) + centeredOffset;
+	
+	GlobalVertex inputs[24];//4 corners and 6 sides
+	
+	//Top
+	inputs[0] = NewGlobalVertex(corners[4], float2(0, 0));
+	inputs[1] = NewGlobalVertex(corners[5], float2(0, 1));
+	inputs[2] = NewGlobalVertex(corners[6], float2(1, 1));
+	inputs[3] = NewGlobalVertex(corners[7], float2(1, 0));
+	
+	//Bottom
+	inputs[4] = NewGlobalVertex(corners[3], float2(0, 0));
+	inputs[5] = NewGlobalVertex(corners[2], float2(0, 1));
+	inputs[6] = NewGlobalVertex(corners[1], float2(1, 1));
+	inputs[7] = NewGlobalVertex(corners[0], float2(1, 0));
+	
+	//Left
+	inputs[8] =  NewGlobalVertex(corners[1], float2(0, 0));
+	inputs[9] =  NewGlobalVertex(corners[5], float2(0, 1));
+	inputs[10] = NewGlobalVertex(corners[4], float2(1, 1));
+	inputs[11] = NewGlobalVertex(corners[0], float2(1, 0));
+	
+	//Right
+	inputs[12] = NewGlobalVertex(corners[3], float2(0, 0));
+	inputs[13] = NewGlobalVertex(corners[7], float2(0, 1));
+	inputs[14] = NewGlobalVertex(corners[6], float2(1, 1));
+	inputs[15] = NewGlobalVertex(corners[2], float2(1, 0));
+	
+	//Forawrd
+	inputs[16] = NewGlobalVertex(corners[2], float2(0, 0));
+	inputs[17] = NewGlobalVertex(corners[6], float2(0, 1));
+	inputs[18] = NewGlobalVertex(corners[5], float2(1, 1));
+	inputs[19] = NewGlobalVertex(corners[1], float2(1, 0));
+	
+	//Back
+	inputs[20] = NewGlobalVertex(corners[0], float2(0, 0));
+	inputs[21] = NewGlobalVertex(corners[4], float2(0, 1));
+	inputs[22] = NewGlobalVertex(corners[7], float2(1, 1));
+	inputs[23] = NewGlobalVertex(corners[3], float2(1, 0));
+	
+
+	for (int i = 0; i < 6; i++)
+	{
+		AddTriangle(inputs[i * 4], inputs[i * 4 + 1], inputs[i * 4 + 2]);
+		AddTriangle(inputs[i * 4], inputs[i * 4 + 2], inputs[i * 4 + 3]);
+	}   
+}
+
+void UpdateBounds(DrawTriangle tri)
+{
+	for (int i = 0; i < 3; i++)
+	{
+		GlobalVertex vertex = tri.vertices[i];
+		
+		float minX = _BoundsBuffer[0].x, minY = _BoundsBuffer[0].y, minZ = _BoundsBuffer[0].z;
+		
+		if (vertex.positionWS.x < minX)
+		{
+			minX = vertex.positionWS.x;
+		}
+		
+		if (vertex.positionWS.y < minY)
+		{
+			minY = vertex.positionWS.y;
+		}
+		
+		if (vertex.positionWS.z < minZ)
+		{
+			minZ = vertex.positionWS.z;
+		}
+		
+		_BoundsBuffer[0] = float3(minX, minY, minZ);
+		
+		float maxX = _BoundsBuffer[1].x, maxY = _BoundsBuffer[1].y, maxZ = _BoundsBuffer[1].z;
+		
+		if (vertex.positionWS.x > maxX)
+		{
+			maxX = vertex.positionWS.x;
+		}
+		
+		if (vertex.positionWS.y > maxY)
+		{
+			maxY = vertex.positionWS.y;
+		}
+		
+		if (vertex.positionWS.z > maxZ)
+		{
+			maxZ = vertex.positionWS.z;
+		}
+		
+		_BoundsBuffer[1] = float3(maxX, maxY, maxZ);
+	}
+
+}
+
+[numthreads(128, 1, 1)]
+void Main(uint3 id : SV_DispatchThreadID)
+{
+    // Disptaches can only be in chunks of 128, there might be more threads than number
+    // of triangles. Return in that case
+	if ((int) id.x >= 10)
+	{
+		return;
+	}
+	
+	float3 center = float3(id.x, 0, 0);
+	
+	AddCubeToDrawBuffer(center, _Scale);
+}
+
+// Multiply the number of vertices by three to convert from triangles
+[numthreads(1, 1, 1)]
+void TriToVertCount(uint3 id : SV_DispatchThreadID)
+{
+	_IndirectArgsBuffer[0].numVerticesPerInstance *= 3;
+}
+
+// Calcuate bounds using vertices that were added to the vertices buffer during Main function
+[numthreads(1, 1, 1)]
+void CalculateBounds(uint3 id : SV_DispatchThreadID)
+{
+	_BoundsBuffer[0] = TransformToWorldSpaceF3(float3(0, 0, 0) - _Scale / 2.0f);
+	_BoundsBuffer[1] = TransformToWorldSpaceF3(float3(10, _Scale.y, _Scale.z) - _Scale / 2.0f);
+}

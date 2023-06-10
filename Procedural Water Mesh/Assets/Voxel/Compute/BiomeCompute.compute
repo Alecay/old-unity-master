@@ -1,0 +1,157 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Main
+
+#include "NOISE_SIMPLEX_FUNC.hlsl"
+
+
+int TextureSize;
+
+int Seed; //= 42;
+int Octaves; //= 5;
+float Scale; //= 100.0f;
+float Persistance; //= 0.5f;
+float Lacunarity; //= 2.0f;
+float2 Offset;
+
+float4 MinColor;
+float4 MaxColor;
+
+float ColorStep;
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> Result;
+
+//RWStructuredBuffer<float> Noise_Values_Buffer;
+
+float Noise2D(float x, float y, int seed, float chunkSize, float scale, float octaves, float persistance, float lacunarity, float2 offset)
+{
+	float minScale = 1.0f / 10000.0f;
+	
+	if (scale < minScale)
+	{
+		scale = minScale;
+	}
+	
+	float amplitude = 1;
+	float frequency = 1;
+	float noiseValue = 0;
+	
+	float sampleX = 0;
+	float sampleY = 0;
+	float perlinValue = 0;
+	
+	float halfXWidth = chunkSize / 2.0f;
+	float halfYWidth = chunkSize / 2.0f;
+	
+	bool centered = false;
+	
+	if (!centered)
+	{
+		halfXWidth = 0;
+		halfYWidth = 0;
+	}
+	
+	float maxPerlinValue = 0;
+	
+	for (uint i = 0; i < octaves; i++)
+	{
+		maxPerlinValue += amplitude;
+		
+		amplitude *= persistance;
+	}
+	
+	amplitude = 1;
+	
+	float seedX = lerp(-1000, 1000, (snoise(float2(seed, seed + 1)) + 1) / 2.0f);
+	float seedY = lerp(-1000, 1000, (snoise(float2(seed + 1, seed)) + 1) / 2.0f);
+	
+	for (uint j = 0; j < octaves; j++)
+	{
+		sampleX = ((x - halfXWidth + offset.x) / scale * frequency) + seedX + (j + 1);
+		sampleY = ((y - halfYWidth + offset.y) / scale * frequency) + seedY + (j + 1);
+		
+		perlinValue = snoise(float2(sampleX, sampleY));
+
+		noiseValue += perlinValue * amplitude;
+		
+		amplitude *= persistance;
+		frequency *= lacunarity;
+
+	}
+	
+	return noiseValue;
+}
+
+[numthreads(8,8,1)]
+void Main (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+
+	if (id.x + id.y * TextureSize >= TextureSize * TextureSize)
+	{
+		return;
+	}
+	
+	float noiseValue = Noise2D(id.x, id.y, Seed, TextureSize, Scale, Octaves, Persistance, Lacunarity, Offset);
+	noiseValue = clamp(noiseValue, -1, 1);
+	
+	float lerpedNoise = (noiseValue + 1) / 2.0f;
+	float steppedValue = round(lerpedNoise * ColorStep) / ColorStep;
+	
+	float4 color;// = lerp(MinColor, MaxColor, steppedValue);
+	//color.w = lerpedNoise;
+	
+	int wrapWidth = TextureSize * 0.7f;
+	int wrapSize = TextureSize - wrapWidth;	
+	
+	//if (id.x > wrapWidth && id.y > wrapWidth && false)
+	//{
+	//	int xDist = (id.x - wrapWidth);
+	//	float t = xDist / (float) wrapSize;
+		
+	//	int yDist = (id.y - wrapWidth);
+	//	float s = yDist / (float) wrapSize;
+		
+	//	s = min(t, s);// (t + s) / 2.0f;
+		
+	//	float wrapNoise = Noise2D(-wrapSize + xDist, -wrapSize + yDist, Seed, TextureSize, Scale, Octaves, Persistance, Lacunarity, Offset);
+	//	wrapNoise = (wrapNoise + 1) / 2.0f;
+	//	wrapNoise = round(wrapNoise * ColorStep) / ColorStep;
+		
+	//	lerpedNoise = wrapNoise;
+		
+	//	steppedValue = lerp(steppedValue, wrapNoise, s);
+	//}
+	//else if (id.x > wrapWidth && true)
+	//{
+	//	int xDist = (id.x - wrapWidth);
+	//	float t = xDist / (float) wrapSize;
+		
+	//	float wrapNoise = Noise2D(-wrapSize + xDist, id.y, Seed, TextureSize, Scale, Octaves, Persistance, Lacunarity, Offset);
+	//	wrapNoise = (wrapNoise + 1) / 2.0f;
+	//	wrapNoise = round(wrapNoise * ColorStep) / ColorStep;
+		
+	//	lerpedNoise = wrapNoise;
+		
+	//	steppedValue = lerp(steppedValue, wrapNoise, t);
+	//}
+	//else if (id.y > wrapWidth && false)
+	//{
+	//	int yDist = (id.y - wrapWidth);
+	//	float s = yDist / (float) wrapSize;
+		
+	//	float wrapNoise = Noise2D(id.x, -wrapSize + yDist, Seed, TextureSize, Scale, Octaves, Persistance, Lacunarity, Offset);
+	//	wrapNoise = (wrapNoise + 1) / 2.0f;
+	//	wrapNoise = round(wrapNoise * ColorStep) / ColorStep;
+		
+	//	lerpedNoise = wrapNoise;
+		
+	//	steppedValue = lerp(steppedValue, wrapNoise, s);
+	//}	
+	
+	color = lerp(MinColor, MaxColor, steppedValue);
+	color.w = lerpedNoise;
+	
+    Result[id.xy] = color;
+}
